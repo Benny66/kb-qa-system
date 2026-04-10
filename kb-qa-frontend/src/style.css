@@ -1,0 +1,156 @@
+/* ── 全局重置 & 基础样式 ─────────────────────────────────────────────────── */
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+:root {
+  --primary: #4f6ef7;
+  --primary-dark: #3a56d4;
+  --primary-light: #eef0fe;
+  --danger: #ef4444;
+  --danger-light: #fef2f2;
+  --success: #22c55e;
+  --success-light: #f0fdf4;
+  --warning: #f59e0b;
+  --text-primary: #1e293b;
+  --text-secondary: #64748b;
+  --text-muted: #94a3b8;
+  --border: #e2e8f0;
+  --bg: #f8fafc;
+  --bg-card: #ffffff;
+  --shadow-sm: 0 1px 3px rgba(0,0,0,.08);
+  --shadow: 0 4px 16px rgba(0,0,0,.10);
+  --radius: 10px;
+  --radius-sm: 6px;
+  --sidebar-width: 220px;
+}
+
+html, body, #app {
+  height: 100%;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+    'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+  font-size: 14px;
+  color: var(--text-primary);
+  background: var(--bg);
+  line-height: 1.6;
+}
+
+a { color: inherit; text-decoration: none; }
+
+/* ── 通用按钮 ────────────────────────────────────────────────────────────── */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 18px;
+  border: none;
+  border-radius: var(--radius-sm);
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all .18s;
+  white-space: nowrap;
+}
+.btn:disabled { opacity: .55; cursor: not-allowed; }
+.btn-primary { background: var(--primary); color: #fff; }
+.btn-primary:hover:not(:disabled) { background: var(--primary-dark); }
+.btn-danger  { background: var(--danger); color: #fff; }
+.btn-danger:hover:not(:disabled)  { background: #dc2626; }
+.btn-ghost   { background: transparent; color: var(--text-secondary); border: 1px solid var(--border); }
+.btn-ghost:hover:not(:disabled)   { background: var(--bg); }
+.btn-sm { padding: 5px 12px; font-size: 13px; }
+
+/* ── 通用输入框 ──────────────────────────────────────────────────────────── */
+.input {
+  width: 100%;
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 14px;
+  color: var(--text-primary);
+  background: #fff;
+  outline: none;
+  transition: border-color .18s, box-shadow .18s;
+}
+.input:focus {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px rgba(79,110,247,.12);
+}
+
+/* ── 卡片 ────────────────────────────────────────────────────────────────── */
+.card {
+  background: var(--bg-card);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+  border: 1px solid var(--border);
+}
+
+/* ── 标签 ────────────────────────────────────────────────────────────────── */
+.tag {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 20px;
+  font-size: 12px;
+  font-weight: 500;
+}
+.tag-blue { background: var(--primary-light); color: var(--primary); }
+.tag-green { background: var(--success-light); color: #16a34a; }
+
+/* ── 空状态 ──────────────────────────────────────────────────────────────── */
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 60px 20px;
+  color: var(--text-muted);
+  gap: 12px;
+}
+.empty-state .icon { font-size: 48px; }
+.empty-state p { font-size: 15px; }
+
+/* ── 加载动画 ────────────────────────────────────────────────────────────── */
+.spinner {
+  width: 20px; height: 20px;
+  border: 2px solid var(--border);
+  border-top-color: var(--primary);
+  border-radius: 50%;
+  animation: spin .7s linear infinite;
+  display: inline-block;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ── Toast 提示 ──────────────────────────────────────────────────────────── */
+.toast-container {
+  position: fixed;
+  top: 20px;
+  right: 20px;
+  z-index: 9999;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.toast {
+  padding: 12px 18px;
+  border-radius: var(--radius-sm);
+  color: #fff;
+  font-size: 14px;
+  box-shadow: var(--shadow);
+  animation: slideIn .25s ease;
+  max-width: 320px;
+}
+.toast-success { background: var(--success); }
+.toast-error   { background: var(--danger); }
+.toast-info    { background: var(--primary); }
+@keyframes slideIn {
+  from { transform: translateX(100%); opacity: 0; }
+  to   { transform: translateX(0);    opacity: 1; }
+}
+
+/* ── 滚动条美化 ──────────────────────────────────────────────────────────── */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
