@@ -1,9 +1,9 @@
 <template>
-  <div class="page">  
+  <div class="page">   
     <div class="page-header">
       <div>
         <h2 class="page-title">🗂️ 知识库管理</h2>
-        <p class="page-desc">上传 TXT 文件作为知识库，支持中英文内容</p>
+        <p class="page-desc">上传 TXT / PDF / DOCX / Markdown 文件作为知识库，支持中英文内容</p>
       </div>
       <label class="btn btn-primary upload-btn" :class="{ disabled: uploading }">
         <span v-if="uploading" class="spinner"></span>
@@ -11,7 +11,7 @@
         {{ uploading ? `上传中 ${uploadProgress}%` : '上传知识库' }}
         <input
           type="file"
-          accept=".txt"
+          accept=".txt,.md,.markdown,.pdf,.docx"
           style="display:none"
           :disabled="uploading"
           @change="handleFileChange"
@@ -31,7 +31,7 @@
 
     <div v-else-if="kbList.length === 0" class="empty-state">
       <span class="icon">📂</span>
-      <p>暂无知识库，点击右上角上传 TXT 文件</p>
+      <p>暂无知识库，点击右上角上传 TXT / PDF / DOCX / Markdown 文件</p>
     </div>
 
     <div v-else class="kb-grid">
@@ -111,8 +111,10 @@ async function handleFileChange(e) {
   if (!file) return
   e.target.value = '' // 重置，允许重复上传同名文件
 
-  if (!file.name.endsWith('.txt')) {
-    toast.error('只支持上传 .txt 格式文件')
+  const allowedExtensions = ['txt', 'md', 'markdown', 'pdf', 'docx']
+  const ext = file.name.includes('.') ? file.name.split('.').pop().toLowerCase() : ''
+  if (!allowedExtensions.includes(ext)) {
+    toast.error('只支持上传 txt / md / markdown / pdf / docx 格式文件')
     return
   }
   if (file.size > 10 * 1024 * 1024) {

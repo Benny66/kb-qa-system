@@ -1,8 +1,8 @@
 # 知识库问答系统
-  
+   
 一个基于 **Vue 3 + Flask + SQLite + 智谱 AI** 的轻量级知识库问答项目。
 
-你可以上传 `.txt` 文件作为知识库，系统会基于知识库内容进行问答，并支持：
+你可以上传 `.txt`、`.md` / `.markdown`、`.pdf`、`.docx` 文件作为知识库，系统会基于知识库内容进行问答，并支持：
 
 - 多轮连续追问
 - 真正会话式聊天
@@ -22,7 +22,7 @@
 - 前端自动注入 Token，请求 401 自动跳转登录页
 
 ### 2. 知识库管理
-- 支持上传 `.txt` 文件作为知识库
+- 支持上传 `.txt` / `.md` / `.markdown` / `.pdf` / `.docx` 文件作为知识库
 - 支持删除知识库
 - 展示文件大小、字符数、上传时间
 - 删除知识库时会联动删除关联会话和问答记录
@@ -83,6 +83,7 @@
 ├── kb-qa-backend/
 │   ├── app.py                # Flask 主应用、接口、数据库初始化
 │   ├── ai_service.py         # AI 生成服务，基于检索片段回答
+│   ├── document_loader.py    # 多格式文档解析（txt/md/pdf/docx）
 │   ├── rag_service.py        # RAG 服务：切分、向量化、入库、检索
 │   ├── models.py             # 数据模型：User / KnowledgeBase / ChatSession / ChatHistory
 │   ├── requirements.txt      # 后端依赖
@@ -154,6 +155,8 @@
 - `werkzeug==3.0.3`
 - `zhipuai>=2.1.5`
 - `chromadb>=0.5.5`
+- `pypdf>=5.0.0`
+- `python-docx>=1.1.2`
 - `python-dotenv==1.0.1`
 - `sniffio>=1.3.0`
 
@@ -220,7 +223,7 @@ RAG_EMBED_BATCH_SIZE=32
 ## 使用说明
 
 ### 1. 上传知识库
-进入“知识库管理”页面，上传 `.txt` 文件。
+进入“知识库管理”页面，上传 `.txt`、`.md` / `.markdown`、`.pdf`、`.docx` 文件。
 
 ### 2. 开始问答
 进入“AI 问答”页面：
@@ -264,7 +267,7 @@ RAG_EMBED_BATCH_SIZE=32
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/api/kb` | 获取知识库列表 |
-| POST | `/api/kb/upload` | 上传知识库 TXT 文件 |
+| POST | `/api/kb/upload` | 上传知识库文件（txt / md / markdown / pdf / docx） |
 | DELETE | `/api/kb/<id>` | 删除知识库 |
 | POST | `/api/kb/<id>/reindex` | 重建指定知识库的向量索引 |
 
@@ -299,7 +302,7 @@ RAG_EMBED_BATCH_SIZE=32
 用户表，保存预置登录账号。
 
 ### KnowledgeBase
-知识库表，保存上传的 `.txt` 文件信息。
+知识库表，保存上传的知识库文件信息。
 
 ### ChatSession
 会话表，表示一个独立聊天主题。
@@ -315,7 +318,7 @@ RAG_EMBED_BATCH_SIZE=32
 
 完整流程如下：
 
-1. 上传 TXT 知识库
+1. 上传知识库文件（TXT / Markdown / PDF / DOCX）
 2. 后端对文本进行清洗与切分
 3. 调用智谱 Embedding 模型生成向量
 4. 将文本片段写入 ChromaDB 向量库
@@ -327,7 +330,7 @@ RAG_EMBED_BATCH_SIZE=32
 
 - 比原来的“整篇文本直接注入”更适合中大型知识库
 - 能显著降低上下文浪费
-- 更适合后续扩展 PDF / Markdown / 多文档知识库
+- 已支持 TXT / Markdown / PDF / DOCX 多格式知识库
 - 已兼容会话式多轮追问
 
 当前默认方案：

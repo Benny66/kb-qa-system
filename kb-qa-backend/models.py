@@ -45,6 +45,7 @@ class KnowledgeBase(db.Model):
     user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
     name = db.Column(db.String(128), nullable=False)          # 知识库名称（文件名）
     filename = db.Column(db.String(256), nullable=False)      # 服务器存储文件名
+    original_filename = db.Column(db.String(256), nullable=True)  # 用户原始文件名
     file_path = db.Column(db.String(512), nullable=False)     # 文件完整路径
     file_size = db.Column(db.Integer, default=0)              # 文件大小（字节）
     char_count = db.Column(db.Integer, default=0)             # 字符数
@@ -60,6 +61,7 @@ class KnowledgeBase(db.Model):
             "user_id": self.user_id,
             "name": self.name,
             "filename": self.filename,
+            "original_filename": self.original_filename or self.filename,
             "file_size": self.file_size,
             "char_count": self.char_count,
             "created_at": self.created_at.isoformat(),

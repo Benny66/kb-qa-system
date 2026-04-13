@@ -15,6 +15,8 @@ import chromadb
 from dotenv import load_dotenv
 from zhipuai import ZhipuAI
 
+from document_loader import extract_document_text
+
 load_dotenv()
 
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -38,16 +40,6 @@ _collection = _chroma_client.get_or_create_collection(
     name=_collection_name,
     metadata={"hnsw:space": "cosine"},
 )
-
-
-def read_text_file(file_path: str) -> str:
-    """读取 TXT 文件内容。"""
-    try:
-        with open(file_path, "r", encoding="utf-8") as f:
-            return f.read()
-    except UnicodeDecodeError:
-        with open(file_path, "r", encoding="gbk", errors="replace") as f:
-            return f.read()
 
 
 def normalize_text(text: str) -> str:
@@ -164,9 +156,15 @@ def delete_knowledge_base_index(kb_id: int, user_id: int) -> None:
     _collection.delete(where=_build_where(kb_id, user_id))
 
 
-def index_knowledge_base(kb_id: int, user_id: int, file_path: str, kb_name: str = "") -> dict:
+def index_knowledge_base(
+    kb_id: int,
+    user_id: int,
+    file_path: str,
+    kb_name: str = "",
+    original_filename: str | None = None,
+) -> dict:
     """为知识库创建向量索引。"""
-    text = read_text_file(file_path)
+    text = extract_document_text(file_path, original_filename or os.path.basename(file_path))
     chunks = split_text(text)
     if not chunks:
         raise RuntimeError("知识库内容为空，无法建立向量索引")
@@ -199,7 +197,13 @@ def index_knowledge_base(kb_id: int, user_id: int, file_path: str, kb_name: str 
     }
 
 
-def ensure_knowledge_base_index(kb_id: int, user_id: int, file_path: str, kb_name: str = "") -> dict:
+def ensure_knowledge_base_index(
+    kb_id: int,
+    user_id: int,
+    file_path: str,
+    kb_name: str = "",
+    original_filename: str | None = None,
+) -> dict:
     """如果知识库还未建立索引，则自动建立。"""
     chunk_count = get_kb_index_count(kb_id, user_id)
     if chunk_count > 0:
@@ -209,7 +213,7 @@ def ensure_knowledge_base_index(kb_id: int, user_id: int, file_path: str, kb_nam
             "created": False,
         }
 
-    result = index_knowledge_base(kb_id, user_id, file_path, kb_name)
+    result = index_knowledge_base(kb_id, user_id, file_path, kb_name, original_filename)
     return {
         "indexed": True,
         "chunk_count": result["chunk_count"],

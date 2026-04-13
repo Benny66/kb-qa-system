@@ -1,5 +1,5 @@
 """
-Flask 主应用      
+Flask 主应用       
 接口列表：
   POST   /api/auth/login              用户登录
   GET    /api/auth/me                 获取当前用户信息
@@ -33,6 +33,7 @@ from werkzeug.utils import secure_filename
 
 from models import db, User, KnowledgeBase, ChatSession, ChatHistory
 from ai_service import ask_question
+from document_loader import is_supported_document, extract_document_text, SUPPORTED_EXTENSIONS
 from rag_service import (
     index_knowledge_base,
     ensure_knowledge_base_index,
@@ -84,8 +85,8 @@ def fail(msg="error", code=400):
 
 
 def allowed_file(filename: str) -> bool:
-    """只允许上传 TXT 文件"""
-    return "." in filename and filename.rsplit(".", 1)[1].lower() == "txt"
+    """允许上传受支持的知识库文件。"""
+    return is_supported_document(filename)
 
 
 def get_current_user() -> User | None:
@@ -118,14 +119,21 @@ def ensure_chat_schema():
             )
         """))
 
-        columns = {
+        history_columns = {
             row[1]
             for row in conn.execute(text("PRAGMA table_info(chat_histories)")).fetchall()
         }
-        if "session_id" not in columns:
+        if "session_id" not in history_columns:
             conn.execute(text("ALTER TABLE chat_histories ADD COLUMN session_id INTEGER"))
-        if "references_json" not in columns:
+        if "references_json" not in history_columns:
             conn.execute(text("ALTER TABLE chat_histories ADD COLUMN references_json TEXT"))
+
+        kb_columns = {
+            row[1]
+            for row in conn.execute(text("PRAGMA table_info(knowledge_bases)")).fetchall()
+        }
+        if "original_filename" not in kb_columns:
+            conn.execute(text("ALTER TABLE knowledge_bases ADD COLUMN original_filename VARCHAR(256)"))
 
 
 def build_session_history_messages(session_id: int, limit: int = 5) -> list[dict]:
@@ -241,8 +249,8 @@ def list_kb():
 @jwt_required()
 def upload_kb():
     """
-    上传 TXT 知识库文件
-    Form-data: file=<TXT文件>
+    上传知识库文件
+    Form-data: file=<txt/pdf/docx/md 文件>
     """
     user = get_current_user()
 
@@ -254,7 +262,8 @@ def upload_kb():
         return fail("文件名不能为空")
 
     if not allowed_file(file.filename):
-        return fail("只支持上传 .txt 格式文件")
+        supported = ", ".join(f".{ext}" for ext in sorted(SUPPORTED_EXTENSIONS))
+        return fail(f"只支持上传以下格式文件：{supported}")
 
     # 生成唯一文件名，防止冲突
     original_name = file.filename
@@ -267,11 +276,12 @@ def upload_kb():
     # 统计文件信息
     file_size = os.path.getsize(file_path)
     try:
-        with open(file_path, "r", encoding="utf-8") as f:
-            char_count = len(f.read())
-    except UnicodeDecodeError:
-        with open(file_path, "r", encoding="gbk", errors="replace") as f:
-            char_count = len(f.read())
+        parsed_text = extract_document_text(file_path, original_name)
+        char_count = len(parsed_text)
+    except Exception as e:
+        if os.path.exists(file_path):
+            os.remove(file_path)
+        return fail(f"文件解析失败：{str(e)}", 400)
 
     # 知识库名称：去掉扩展名
     kb_name = os.path.splitext(original_name)[0]
@@ -280,6 +290,7 @@ def upload_kb():
         user_id=user.id,
         name=kb_name,
         filename=unique_filename,
+        original_filename=original_name,
         file_path=file_path,
         file_size=file_size,
         char_count=char_count,
@@ -289,7 +300,7 @@ def upload_kb():
 
     # 建立向量索引
     try:
-        rag_result = index_knowledge_base(kb.id, user.id, file_path, kb_name)
+        rag_result = index_knowledge_base(kb.id, user.id, file_path, kb_name, original_name)
     except Exception as e:
         db.session.delete(kb)
         db.session.commit()
@@ -350,7 +361,7 @@ def reindex_kb(kb_id):
         return fail("知识库文件丢失，请重新上传", 500)
 
     try:
-        result = index_knowledge_base(kb.id, user.id, kb.file_path, kb.name)
+        result = index_knowledge_base(kb.id, user.id, kb.file_path, kb.name, kb.original_filename or kb.filename)
     except Exception as e:
         return fail(f"重建索引失败：{str(e)}", 500)
 
@@ -500,7 +511,7 @@ def chat():
         return fail("知识库文件丢失，请重新上传", 500)
 
     try:
-        ensure_knowledge_base_index(kb.id, user.id, kb.file_path, kb.name)
+        ensure_knowledge_base_index(kb.id, user.id, kb.file_path, kb.name, kb.original_filename or kb.filename)
     except Exception as e:
         return fail(f"知识库索引不可用：{str(e)}", 500)
 
