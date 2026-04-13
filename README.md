@@ -1,5 +1,5 @@
 # 知识库问答系统
- 
+  
 一个基于 **Vue 3 + Flask + SQLite + 智谱 AI** 的轻量级知识库问答项目。
 
 你可以上传 `.txt` 文件作为知识库，系统会基于知识库内容进行问答，并支持：
@@ -8,6 +8,7 @@
 - 真正会话式聊天
 - 历史会话恢复
 - 按知识库管理会话
+- 基于 **ChromaDB + Embedding** 的 RAG 检索增强
 
 适合课程设计、毕业设计、内部工具原型或个人练手项目。
 
@@ -28,7 +29,10 @@
 
 ### 3. AI 知识库问答
 - 基于智谱 AI 大模型生成回答
-- 回答受知识库内容约束，减少幻觉
+- 使用 **RAG（检索增强生成）** 方案，不再直接整篇喂给模型
+- 上传知识库后自动切分文本并写入 ChromaDB 向量库
+- 提问时先做向量检索，再将 Top-K 相关片段交给模型生成答案
+- 回答受知识片段约束，减少幻觉
 - 支持多轮上下文，能够继续追问
 - 支持在同一知识库下创建多个独立会话
 
@@ -66,7 +70,8 @@
 | 前端 | Vue 3、Vite、Pinia、Vue Router、Axios |
 | 后端 | Python、Flask、Flask-CORS、Flask-SQLAlchemy、Flask-JWT-Extended |
 | 数据库 | SQLite |
-| AI | 智谱 AI（默认 `glm-4-flash`） |
+| 向量数据库 | ChromaDB |
+| AI | 智谱 AI（默认 `glm-4-flash`，Embedding 默认 `embedding-3`） |
 
 ---
 
@@ -77,7 +82,8 @@
 ├── README.md
 ├── kb-qa-backend/
 │   ├── app.py                # Flask 主应用、接口、数据库初始化
-│   ├── ai_service.py         # AI 问答服务，支持多轮上下文
+│   ├── ai_service.py         # AI 生成服务，基于检索片段回答
+│   ├── rag_service.py        # RAG 服务：切分、向量化、入库、检索
 │   ├── models.py             # 数据模型：User / KnowledgeBase / ChatSession / ChatHistory
 │   ├── requirements.txt      # 后端依赖
 │   ├── uploads/              # 上传的知识库文件目录
@@ -147,6 +153,7 @@
 - `flask-jwt-extended==4.6.0`
 - `werkzeug==3.0.3`
 - `zhipuai>=2.1.5`
+- `chromadb>=0.5.5`
 - `python-dotenv==1.0.1`
 - `sniffio>=1.3.0`
 
@@ -156,13 +163,24 @@
 JWT_SECRET_KEY=your-secret-key
 ZHIPUAI_API_KEY=your-api-key-here
 ZHIPUAI_MODEL=glm-4-flash
+ZHIPUAI_EMBEDDING_MODEL=embedding-3
 UPLOAD_FOLDER=uploads
+CHROMA_PERSIST_DIR=chroma_db
+CHROMA_COLLECTION_NAME=kb_qa_chunks
+RAG_CHUNK_SIZE=500
+RAG_CHUNK_OVERLAP=80
+RAG_TOP_K=4
+RAG_EMBED_BATCH_SIZE=32
 ```
 
 说明：
 
 - `ZHIPUAI_API_KEY` 必填
 - `ZHIPUAI_MODEL` 默认推荐 `glm-4-flash`
+- `ZHIPUAI_EMBEDDING_MODEL` 默认推荐 `embedding-3`
+- `CHROMA_PERSIST_DIR` 为 Chroma 向量库本地持久化目录
+- `RAG_CHUNK_SIZE` / `RAG_CHUNK_OVERLAP` 控制文本切片策略
+- `RAG_TOP_K` 控制每次检索召回的片段数量
 - `UPLOAD_FOLDER` 默认可使用 `uploads`
 
 启动后端后，默认运行地址：
@@ -248,6 +266,7 @@ UPLOAD_FOLDER=uploads
 | GET | `/api/kb` | 获取知识库列表 |
 | POST | `/api/kb/upload` | 上传知识库 TXT 文件 |
 | DELETE | `/api/kb/<id>` | 删除知识库 |
+| POST | `/api/kb/<id>/reindex` | 重建指定知识库的向量索引 |
 
 ### 会话接口
 
@@ -290,33 +309,40 @@ UPLOAD_FOLDER=uploads
 
 ---
 
-## AI 说明
+## AI 与 RAG 说明
 
-本项目目前使用的方式是：
+本项目当前已升级为 **RAG（Retrieval-Augmented Generation，检索增强生成）** 方案。
 
-- 读取知识库文本
-- 注入系统 Prompt
-- 携带最近几轮上下文
-- 调用智谱 AI 生成答案
+完整流程如下：
+
+1. 上传 TXT 知识库
+2. 后端对文本进行清洗与切分
+3. 调用智谱 Embedding 模型生成向量
+4. 将文本片段写入 ChromaDB 向量库
+5. 用户提问时，先将问题向量化
+6. 在 ChromaDB 中检索最相关的 Top-K 片段
+7. 将检索结果 + 会话历史一并交给大模型生成答案
 
 当前实现特点：
 
-- 适合中小型 TXT 知识库
-- 支持连续追问
-- 已支持会话恢复
+- 比原来的“整篇文本直接注入”更适合中大型知识库
+- 能显著降低上下文浪费
+- 更适合后续扩展 PDF / Markdown / 多文档知识库
+- 已兼容会话式多轮追问
 
-当前限制：
+当前默认方案：
 
-- 知识库内容超过一定长度时会截断
-- 还不是向量检索式 RAG
+- 向量数据库：ChromaDB
+- Embedding 模型：智谱 `embedding-3`
+- 对话模型：智谱 `glm-4-flash`
 
-如果后续知识库规模变大，建议升级为：
+后续还可以继续扩展为：
 
-- 文本切片
-- 向量化
-- 相似度召回
-- Top-K 上下文拼接
-- 大模型最终生成
+- FAISS 本地索引方案
+- 混合检索（关键词 + 向量）
+- 重排（Rerank）
+- 多路召回
+- 文档来源高亮
 
 ---
 
@@ -370,8 +396,15 @@ UPLOAD_FOLDER=uploads
 
 这属于预期行为。
 
-### 2. 为什么大文件效果不好？
-因为当前实现是直接读取 TXT 内容，并有上下文长度限制。对于超长知识库，更建议做 RAG 检索增强。
+### 2. 为什么超长知识库效果会波动？
+虽然当前已经接入 RAG，但效果仍受以下因素影响：
+
+- 切片大小是否合适
+- Embedding 模型质量
+- Top-K 召回数量是否合理
+- 原始 TXT 内容结构是否清晰
+
+如果知识库很大，建议进一步加入 rerank、标题分块、语义分段等优化。
 
 ### 3. 刷新页面后还能继续问吗？
 可以。

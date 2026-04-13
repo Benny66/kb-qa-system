@@ -4,9 +4,10 @@
   - User             用户表（预置账号，无注册）
   - KnowledgeBase    知识库表（TXT 文件元信息）
   - ChatSession      会话表
-  - ChatHistory      问答历史表
+  - ChatHistory      问答历史表（含参考片段）
 """
 
+import json
 from datetime import datetime, timezone
 from flask_sqlalchemy import SQLAlchemy
 
@@ -108,10 +109,18 @@ class ChatHistory(db.Model):
     session_id = db.Column(db.Integer, db.ForeignKey("chat_sessions.id"), nullable=True)
     question = db.Column(db.Text, nullable=False)             # 用户提问
     answer = db.Column(db.Text, nullable=False)               # AI 回答
+    references_json = db.Column(db.Text, nullable=True)       # 检索参考片段（JSON）
     tokens_used = db.Column(db.Integer, default=0)            # 消耗 token 数
     created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
 
     def to_dict(self):
+        references = []
+        if self.references_json:
+            try:
+                references = json.loads(self.references_json)
+            except Exception:
+                references = []
+
         return {
             "id": self.id,
             "user_id": self.user_id,
@@ -121,6 +130,7 @@ class ChatHistory(db.Model):
             "session_title": self.session.title if self.session else "",
             "question": self.question,
             "answer": self.answer,
+            "references": references,
             "tokens_used": self.tokens_used,
             "created_at": self.created_at.isoformat(),
         }

@@ -1,5 +1,5 @@
 <template>
-  <div class="page">
+  <div class="page">  
     <div class="page-header">
       <div>
         <h2 class="page-title">🗂️ 知识库管理</h2>
@@ -43,17 +43,30 @@
             <div class="kb-meta">
               <span class="tag tag-blue">{{ formatSize(kb.file_size) }}</span>
               <span class="tag tag-green">{{ kb.char_count.toLocaleString() }} 字符</span>
+              <span class="tag" :class="kb.indexed ? 'tag-green' : 'tag-blue'">
+                {{ kb.indexed ? '已建索引' : '未建索引' }}
+              </span>
+              <span class="tag tag-blue">{{ kb.chunk_count || 0 }} chunks</span>
             </div>
           </div>
         </div>
         <div class="kb-date">上传于 {{ formatDate(kb.created_at) }}</div>
-        <div class="kb-actions">
+        <div class="kb-actions kb-actions--wrap">
           <button class="btn btn-primary btn-sm" @click="goChat(kb)">
             💬 开始问答
           </button>
           <button
+            class="btn btn-ghost btn-sm"
+            :disabled="reindexingId === kb.id || deletingId === kb.id"
+            @click="handleReindex(kb)"
+          >
+            <span v-if="reindexingId === kb.id" class="spinner" style="width:12px;height:12px;border-width:2px"></span>
+            <span v-else>🔄</span>
+            重建索引
+          </button>
+          <button
             class="btn btn-danger btn-sm"
-            :disabled="deletingId === kb.id"
+            :disabled="deletingId === kb.id || reindexingId === kb.id"
             @click="handleDelete(kb)"
           >
             <span v-if="deletingId === kb.id" class="spinner" style="width:12px;height:12px;border-width:2px"></span>
@@ -68,7 +81,7 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { listKb, uploadKb, deleteKb } from '@/api/kb'
+import { listKb, uploadKb, deleteKb, reindexKb } from '@/api/kb'
 import { useToastStore } from '@/stores/toast'
 
 const router = useRouter()
@@ -79,6 +92,7 @@ const loading = ref(false)
 const uploading = ref(false)
 const uploadProgress = ref(0)
 const deletingId = ref(null)
+const reindexingId = ref(null)
 
 async function fetchKbList() {
   loading.value = true
@@ -131,6 +145,24 @@ async function handleDelete(kb) {
     toast.error('删除失败：' + e.message)
   } finally {
     deletingId.value = null
+  }
+}
+
+async function handleReindex(kb) {
+  if (!confirm(`确定重建知识库「${kb.name}」的向量索引？`)) return
+  reindexingId.value = kb.id
+  try {
+    const res = await reindexKb(kb.id)
+    toast.success(`索引重建成功，共 ${res.data.chunk_count} 个 chunks`)
+    const target = kbList.value.find((item) => item.id === kb.id)
+    if (target) {
+      target.chunk_count = res.data.chunk_count
+      target.indexed = true
+    }
+  } catch (e) {
+    toast.error('重建索引失败：' + e.message)
+  } finally {
+    reindexingId.value = null
   }
 }
 
@@ -214,4 +246,5 @@ onMounted(fetchKbList)
 .kb-meta { display: flex; gap: 6px; flex-wrap: wrap; }
 .kb-date { font-size: 12px; color: var(--text-muted); }
 .kb-actions { display: flex; gap: 8px; }
+.kb-actions--wrap { flex-wrap: wrap; }
 </style>

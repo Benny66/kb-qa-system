@@ -1,5 +1,5 @@
 import request from './request'
-
+ 
 /** 获取知识库列表 */
 export const listKb = () => request.get('/kb')
 
@@ -19,3 +19,6 @@ export const uploadKb = (file, onProgress) => {
 
 /** 删除知识库 */
 export const deleteKb = (kbId) => request.delete(`/kb/${kbId}`)
+
+/** 重建知识库向量索引 */
+export const reindexKb = (kbId) => request.post(`/kb/${kbId}/reindex`)

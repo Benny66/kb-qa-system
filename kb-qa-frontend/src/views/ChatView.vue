@@ -100,6 +100,10 @@
                 <div class="message-meta">
                   {{ formatTime(msg.time) }}
                   <span v-if="msg.tokens" class="token-info">· {{ msg.tokens }} tokens</span>
+                  <span v-if="msg.role === 'ai' && msg.retrievedChunks" class="token-info">· 命中 {{ msg.retrievedChunks }} 个片段</span>
+                </div>
+                <div v-if="msg.role === 'ai' && msg.references?.length" class="reference-actions">
+                  <button class="reference-btn" @click="openReferences(msg)">查看参考片段</button>
                 </div>
               </div>
             </div>
@@ -145,6 +149,27 @@
         </div>
       </section>
     </div>
+
+    <div v-if="referenceDialogVisible" class="reference-dialog-mask" @click="closeReferences">
+      <div class="reference-dialog card" @click.stop>
+        <div class="reference-dialog-header">
+          <div class="reference-dialog-title">{{ activeReferenceTitle }}</div>
+          <button class="btn btn-ghost btn-sm" @click="closeReferences">关闭</button>
+        </div>
+        <div v-if="activeReferences.length === 0" class="reference-empty">暂无参考片段</div>
+        <div v-else class="reference-list">
+          <div v-for="(item, index) in activeReferences" :key="index" class="reference-item">
+            <div class="reference-item-header">
+              <span class="tag tag-blue">片段 {{ index + 1 }}</span>
+              <span class="reference-distance" v-if="item.distance !== undefined && item.distance !== null">
+                distance: {{ Number(item.distance).toFixed(4) }}
+              </span>
+            </div>
+            <div class="reference-item-content">{{ item.content }}</div>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -178,6 +203,9 @@ const messages = ref([])
 const inputText = ref('')
 const thinking = ref(false)
 const chatBodyRef = ref(null)
+const referenceDialogVisible = ref(false)
+const activeReferences = ref([])
+const activeReferenceTitle = ref('')
 
 const selectedKb = computed(() =>
   kbList.value.find((k) => k.id === selectedKbId.value) || null
@@ -212,6 +240,8 @@ function normalizeSessionMessages(items = []) {
       role: 'ai',
       content: item.answer,
       tokens: item.tokens_used,
+      references: item.references || [],
+      retrievedChunks: (item.references || []).length,
       time: item.created_at,
     })
   }
@@ -363,6 +393,8 @@ async function handleSend() {
       role: 'ai',
       content: res.data.answer,
       tokens: res.data.tokens_used,
+      references: res.data.references || [],
+      retrievedChunks: res.data.retrieved_chunks || 0,
       time: res.data.created_at,
     })
 
@@ -415,6 +447,18 @@ async function handleDeleteSession(session) {
   } finally {
     deletingSessionId.value = null
   }
+}
+
+function openReferences(msg) {
+  activeReferences.value = msg.references || []
+  activeReferenceTitle.value = `参考片段（命中 ${msg.retrievedChunks || activeReferences.value.length} 个）`
+  referenceDialogVisible.value = true
+}
+
+function closeReferences() {
+  referenceDialogVisible.value = false
+  activeReferences.value = []
+  activeReferenceTitle.value = ''
 }
 
 function scrollToBottom() {
@@ -652,6 +696,16 @@ onMounted(async () => {
   opacity: .6;
 }
 .token-info { margin-left: 4px; }
+.reference-actions { margin-top: 8px; }
+.reference-btn {
+  background: transparent;
+  border: none;
+  color: var(--primary);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 0;
+}
+.reference-btn:hover { text-decoration: underline; }
 .thinking {
   display: flex;
   align-items: center;
@@ -697,4 +751,70 @@ onMounted(async () => {
   margin-right: auto;
 }
 .char-count--warn { color: var(--danger); }
+
+.reference-dialog-mask {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 23, 42, .45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 20px;
+}
+.reference-dialog {
+  width: min(840px, 100%);
+  max-height: 80vh;
+  overflow: hidden;
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.reference-dialog-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.reference-dialog-title {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+.reference-empty {
+  color: var(--text-muted);
+  text-align: center;
+  padding: 24px 0;
+}
+.reference-list {
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.reference-item {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px 14px;
+  background: var(--bg-card);
+}
+.reference-item-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.reference-distance {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.reference-item-content {
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.7;
+  font-size: 14px;
+  color: var(--text-primary);
+}
 </style>

@@ -1,5 +1,5 @@
 """
-Flask 主应用   
+Flask 主应用      
 接口列表：
   POST   /api/auth/login              用户登录
   GET    /api/auth/me                 获取当前用户信息
@@ -13,6 +13,7 @@ Flask 主应用
   DELETE /api/chat/history/<id>       删除单条历史
 """
 
+import json
 import os
 import uuid
 from datetime import datetime, timezone
@@ -32,6 +33,13 @@ from werkzeug.utils import secure_filename
 
 from models import db, User, KnowledgeBase, ChatSession, ChatHistory
 from ai_service import ask_question
+from rag_service import (
+    index_knowledge_base,
+    ensure_knowledge_base_index,
+    retrieve_knowledge_context,
+    delete_knowledge_base_index,
+    get_kb_index_count,
+)
 
 # ── 加载环境变量 ──────────────────────────────────────────────────────────────
 load_dotenv()
@@ -95,7 +103,7 @@ def generate_session_title(question: str) -> str:
 
 
 def ensure_chat_schema():
-    """兼容旧版 SQLite：补齐会话表和 session_id 字段。"""
+    """兼容旧版 SQLite：补齐会话表和问答扩展字段。"""
     with db.engine.begin() as conn:
         conn.execute(text("""
             CREATE TABLE IF NOT EXISTS chat_sessions (
@@ -116,6 +124,8 @@ def ensure_chat_schema():
         }
         if "session_id" not in columns:
             conn.execute(text("ALTER TABLE chat_histories ADD COLUMN session_id INTEGER"))
+        if "references_json" not in columns:
+            conn.execute(text("ALTER TABLE chat_histories ADD COLUMN references_json TEXT"))
 
 
 def build_session_history_messages(session_id: int, limit: int = 5) -> list[dict]:
@@ -214,7 +224,17 @@ def list_kb():
         .order_by(KnowledgeBase.created_at.desc())
         .all()
     )
-    return success([kb.to_dict() for kb in kbs])
+    items = []
+    for kb in kbs:
+        item = kb.to_dict()
+        try:
+            item["chunk_count"] = get_kb_index_count(kb.id, user.id)
+            item["indexed"] = item["chunk_count"] > 0
+        except Exception:
+            item["chunk_count"] = 0
+            item["indexed"] = False
+        items.append(item)
+    return success(items)
 
 
 @app.route("/api/kb/upload", methods=["POST"])
@@ -267,18 +287,37 @@ def upload_kb():
     db.session.add(kb)
     db.session.commit()
 
-    return success(kb.to_dict(), "知识库上传成功", 201)
+    # 建立向量索引
+    try:
+        rag_result = index_knowledge_base(kb.id, user.id, file_path, kb_name)
+    except Exception as e:
+        db.session.delete(kb)
+        db.session.commit()
+        if os.path.exists(file_path):
+            os.remove(file_path)
+        return fail(f"知识库向量化失败：{str(e)}", 500)
+
+    return success({
+        **kb.to_dict(),
+        "chunk_count": rag_result["chunk_count"],
+    }, "知识库上传成功", 201)
 
 
 @app.route("/api/kb/<int:kb_id>", methods=["DELETE"])
 @jwt_required()
 def delete_kb(kb_id):
-    """删除知识库（同时删除文件和相关历史）"""
+    """删除知识库（同时删除文件、向量索引和相关历史）"""
     user = get_current_user()
     kb = KnowledgeBase.query.filter_by(id=kb_id, user_id=user.id).first()
 
     if not kb:
         return fail("知识库不存在或无权限", 404)
+
+    # 删除向量索引
+    try:
+        delete_knowledge_base_index(kb_id, user.id)
+    except Exception:
+        pass
 
     # 删除物理文件
     if os.path.exists(kb.file_path):
@@ -295,6 +334,31 @@ def delete_kb(kb_id):
     db.session.commit()
 
     return success(msg="知识库已删除")
+
+
+@app.route("/api/kb/<int:kb_id>/reindex", methods=["POST"])
+@jwt_required()
+def reindex_kb(kb_id):
+    """重建指定知识库的向量索引。"""
+    user = get_current_user()
+    kb = KnowledgeBase.query.filter_by(id=kb_id, user_id=user.id).first()
+
+    if not kb:
+        return fail("知识库不存在或无权限", 404)
+
+    if not os.path.exists(kb.file_path):
+        return fail("知识库文件丢失，请重新上传", 500)
+
+    try:
+        result = index_knowledge_base(kb.id, user.id, kb.file_path, kb.name)
+    except Exception as e:
+        return fail(f"重建索引失败：{str(e)}", 500)
+
+    return success({
+        "kb_id": kb.id,
+        "kb_name": kb.name,
+        "chunk_count": result["chunk_count"],
+    }, "知识库索引重建成功")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -435,6 +499,11 @@ def chat():
     if not os.path.exists(kb.file_path):
         return fail("知识库文件丢失，请重新上传", 500)
 
+    try:
+        ensure_knowledge_base_index(kb.id, user.id, kb.file_path, kb.name)
+    except Exception as e:
+        return fail(f"知识库索引不可用：{str(e)}", 500)
+
     session = None
     if session_id:
         session = ChatSession.query.filter_by(id=session_id, user_id=user.id).first()
@@ -456,11 +525,26 @@ def chat():
     if not history_messages:
         history_messages = chat_history or []
 
-    result = ask_question(kb.file_path, question, history_messages)
+    try:
+        retrieval_result = retrieve_knowledge_context(kb.id, user.id, question)
+    except Exception as e:
+        db.session.rollback()
+        return fail(f"知识检索失败：{str(e)}", 500)
+
+    result = ask_question(retrieval_result["context"], question, history_messages)
 
     if not result["success"]:
         db.session.rollback()
         return fail(f"AI 服务异常：{result['error']}", 500)
+
+    references = [
+        {
+            "content": item["content"],
+            "metadata": item.get("metadata", {}),
+            "distance": item.get("distance"),
+        }
+        for item in retrieval_result["chunks"]
+    ]
 
     history = ChatHistory(
         user_id=user.id,
@@ -468,6 +552,7 @@ def chat():
         session_id=session.id,
         question=question,
         answer=result["answer"],
+        references_json=json.dumps(references, ensure_ascii=False),
         tokens_used=result["tokens_used"],
     )
     db.session.add(history)
@@ -484,8 +569,10 @@ def chat():
         "history_id": history.id,
         "question": question,
         "answer": result["answer"],
+        "references": references,
         "tokens_used": result["tokens_used"],
         "kb_name": kb.name,
+        "retrieved_chunks": len(retrieval_result["chunks"]),
         "created_at": history.created_at.isoformat(),
     })
 

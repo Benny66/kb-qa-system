@@ -1,6 +1,6 @@
 """
 AI 问答服务 
-- 读取知识库 TXT 文件内容
+- 接收 RAG 检索出的知识片段作为上下文
 - 构建 Prompt，调用智谱 AI 大模型（zhipuai SDK）
 - 默认模型：glm-4-flash（免费，速度快）
 - 支持携带最近几轮对话上下文，实现连续追问
@@ -19,49 +19,43 @@ _client = ZhipuAI(
 )
 _model = os.getenv("ZHIPUAI_MODEL", "glm-4-flash")
 
-# 知识库内容最大字符数（防止超出上下文窗口）
-MAX_CONTEXT_CHARS = 12000
+# 检索上下文最大字符数（防止超出上下文窗口）
+MAX_CONTEXT_CHARS = 6000
 # 最多携带的历史消息条数（不含当前问题）
 MAX_HISTORY_MESSAGES = 10
 
 
-def load_knowledge_base(file_path: str) -> str:
-    """读取知识库 TXT 文件，返回文本内容（超长则截断）"""
-    try:
-        with open(file_path, "r", encoding="utf-8") as f:
-            content = f.read()
-    except UnicodeDecodeError:
-        # 尝试 GBK 编码（兼容部分中文 TXT）
-        with open(file_path, "r", encoding="gbk", errors="replace") as f:
-            content = f.read()
-
-    if len(content) > MAX_CONTEXT_CHARS:
-        content = content[:MAX_CONTEXT_CHARS] + "\n\n[...内容过长，已截断...]"
-
-    return content
+def trim_context(context: str) -> str:
+    """限制检索上下文长度。"""
+    context = (context or "").strip()
+    if len(context) > MAX_CONTEXT_CHARS:
+        context = context[:MAX_CONTEXT_CHARS] + "\n\n[...检索内容过长，已截断...]"
+    return context
 
 
-def build_system_prompt(kb_content: str) -> str:
-    """构建系统 Prompt，将知识库内容注入"""
+def build_system_prompt(retrieved_context: str) -> str:
+    """构建系统 Prompt，将检索出的知识片段注入。"""
+    retrieved_context = trim_context(retrieved_context)
     return f"""你是一个专业的知识库问答助手。
-请严格根据以下知识库内容回答用户的问题。
+请严格根据以下“检索出的知识片段”回答用户的问题。
 
 规则：
-1. 只根据知识库内容作答，不要编造知识库中没有的信息。
-2. 如果知识库中没有相关内容，请明确告知用户"知识库中未找到相关信息"。
+1. 优先依据给定知识片段回答，不要编造片段中没有的信息。
+2. 如果知识片段不足以回答问题，请明确告知用户“知识库中未找到相关信息”或“当前检索内容不足以回答该问题”。
 3. 回答要简洁、准确、有条理。
 4. 使用中文回答。
+5. 如果用户问题与历史对话有关，可以结合历史对话理解代词指代，但答案事实仍应以检索片段为准。
 
-========== 知识库内容 ==========
-{kb_content}
-================================
+========== 检索出的知识片段 ==========
+{retrieved_context or '[未检索到相关片段]'}
+=====================================
 """
 
 
-def build_chat_messages(kb_content: str, question: str, history: Iterable[dict] | None = None) -> list[dict]:
+def build_chat_messages(retrieved_context: str, question: str, history: Iterable[dict] | None = None) -> list[dict]:
     """构建多轮对话消息列表。"""
     messages = [
-        {"role": "system", "content": build_system_prompt(kb_content)}
+        {"role": "system", "content": build_system_prompt(retrieved_context)}
     ]
 
     normalized_history = []
@@ -87,12 +81,12 @@ def build_chat_messages(kb_content: str, question: str, history: Iterable[dict] 
     return messages
 
 
-def ask_question(file_path: str, question: str, history: list[dict] | None = None) -> dict:
+def ask_question(retrieved_context: str, question: str, history: list[dict] | None = None) -> dict:
     """
     向大模型提问，返回回答结果。
 
     Args:
-        file_path: 知识库 TXT 文件路径
+        retrieved_context: 检索出的知识片段文本
         question: 用户当前问题
         history: 最近几轮历史消息，格式如
                  [{"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}]
@@ -106,8 +100,7 @@ def ask_question(file_path: str, question: str, history: list[dict] | None = Non
         }
     """
     try:
-        kb_content = load_knowledge_base(file_path)
-        messages = build_chat_messages(kb_content, question, history)
+        messages = build_chat_messages(retrieved_context, question, history)
 
         response = _client.chat.completions.create(
             model=_model,
