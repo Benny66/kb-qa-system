@@ -98,7 +98,7 @@
 cd kb-qa-backend
 
 # 创建并激活虚拟环境
-python3 -m venv venv
+python -m venv venv  
 source venv/bin/activate        # Windows: venv\Scripts\activate
 
 # 安装依赖
