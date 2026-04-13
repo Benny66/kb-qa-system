@@ -1,267 +1,412 @@
-# 📚 知识库问答系统
+# 知识库问答系统
  
-基于 **Vue3 + Flask + 智谱 AI** 的简化版知识库问答系统。上传 TXT 文件作为知识库，通过大模型实现精准问答，并保留完整的问答历史记录。
+一个基于 **Vue 3 + Flask + SQLite + 智谱 AI** 的轻量级知识库问答项目。
+
+你可以上传 `.txt` 文件作为知识库，系统会基于知识库内容进行问答，并支持：
+
+- 多轮连续追问
+- 真正会话式聊天
+- 历史会话恢复
+- 按知识库管理会话
+
+适合课程设计、毕业设计、内部工具原型或个人练手项目。
 
 ---
 
-## ✨ 功能特性
+## 功能特性
 
-- 🔐 **用户登录** — 预置账号，JWT 鉴权，无需注册
-- 📂 **知识库管理** — 上传 / 删除 TXT 知识库文件，展示字符数、文件大小
-- 💬 **AI 问答** — 选择知识库后与大模型对话，回答严格基于知识库内容
-- 📋 **问答历史** — 分页查看、按知识库筛选、支持删除单条记录
+### 1. 用户认证
+- 预置账号登录，无需注册
+- 使用 JWT 进行接口鉴权
+- 前端自动注入 Token，请求 401 自动跳转登录页
+
+### 2. 知识库管理
+- 支持上传 `.txt` 文件作为知识库
+- 支持删除知识库
+- 展示文件大小、字符数、上传时间
+- 删除知识库时会联动删除关联会话和问答记录
+
+### 3. AI 知识库问答
+- 基于智谱 AI 大模型生成回答
+- 回答受知识库内容约束，减少幻觉
+- 支持多轮上下文，能够继续追问
+- 支持在同一知识库下创建多个独立会话
+
+### 4. 会话式聊天
+- 自动创建新会话
+- 支持手动新建会话
+- 左侧展示当前知识库下的会话列表
+- 点击历史会话可恢复聊天内容
+- 刷新页面后仍可继续聊天
+
+### 5. 历史会话管理
+- 历史页按“会话”展示，而不是零散单条问答
+- 支持按知识库筛选会话
+- 支持从历史页一键“继续聊天”
+- 支持删除整段会话
 
 ---
-
 ## 🖼️ 页面截图
 
 ### 登录页
-![登录页](kb-qa-project/images/login.png)
+![登录页](kb-qa-project/images/v1.1.0/login.png)
 
 ### 知识库管理
-![知识库管理页面](kb-qa-project/images/知识库管理页面.png)
+![知识库管理页面](kb-qa-project/images/v1.1.0/知识库管理页面.png)
 
 ### AI 问答
-![AI问答页面](kb-qa-project/images/AI问答页面.png)
+![/v1.1.0/知识库管理页面](kb-qa-project/images/v1.1.0/AI问答页面.png)
 
 ### 问答历史
-![问答历史页面](kb-qa-project/images/问答历史页面.png)
-
----
-
-## 🛠️ 技术栈
+![问答历史页面](kb-qa-project/images/v1.1.0/问答历史页面.png)
+## 技术栈
 
 | 层级 | 技术 |
-|------|------|
-| 前端 | Vue 3 · Vite · Pinia · Vue Router · Axios |
-| 后端 | Python 3.11 · Flask · Flask-JWT-Extended · Flask-SQLAlchemy |
+|---|---|
+| 前端 | Vue 3、Vite、Pinia、Vue Router、Axios |
+| 后端 | Python、Flask、Flask-CORS、Flask-SQLAlchemy、Flask-JWT-Extended |
 | 数据库 | SQLite |
-| AI | 智谱 AI（GLM-4-Flash / GLM-4-Air / GLM-4） |
+| AI | 智谱 AI（默认 `glm-4-flash`） |
 
 ---
 
-## 📁 项目结构
+## 项目结构
 
-```
+```text
 .
 ├── README.md
-├── kb-qa-backend/               # Flask 后端
-│   ├── app.py                   # 主应用 & 所有接口
-│   ├── models.py                # 数据库模型（User / KnowledgeBase / ChatHistory）
-│   ├── ai_service.py            # 智谱 AI 问答服务
-│   ├── requirements.txt         # Python 依赖
-│   ├── .env.example             # 环境变量模板
-│   └── uploads/                 # TXT 文件存储目录（自动创建）
-│
-└── kb-qa-frontend/              # Vue3 前端
-    ├── index.html
-    ├── vite.config.js
-    ├── package.json
-    └── src/
-        ├── main.js
-        ├── App.vue
-        ├── style.css            # 全局样式
-        ├── api/                 # Axios 接口封装
-        │   ├── request.js       # 实例配置（JWT 注入 / 错误处理）
-        │   ├── auth.js
-        │   ├── kb.js
-        │   └── chat.js
-        ├── stores/              # Pinia 状态管理
-        │   ├── auth.js          # 用户登录态
-        │   └── toast.js         # 全局提示
-        ├── router/
-        │   └── index.js         # 路由 & 登录守卫
-        └── views/
-            ├── LoginView.vue    # 登录页
-            ├── LayoutView.vue   # 侧边栏布局
-            ├── KbView.vue       # 知识库管理
-            ├── ChatView.vue     # AI 问答
-            └── HistoryView.vue  # 问答历史
+├── kb-qa-backend/
+│   ├── app.py                # Flask 主应用、接口、数据库初始化
+│   ├── ai_service.py         # AI 问答服务，支持多轮上下文
+│   ├── models.py             # 数据模型：User / KnowledgeBase / ChatSession / ChatHistory
+│   ├── requirements.txt      # 后端依赖
+│   ├── uploads/              # 上传的知识库文件目录
+│   └── .env.example          # 环境变量示例（请自行复制为 .env）
+├── kb-qa-frontend/
+│   ├── package.json
+│   ├── vite.config.js
+│   ├── index.html
+│   └── src/
+│       ├── main.js
+│       ├── App.vue
+│       ├── style.css
+│       ├── api/
+│       │   ├── request.js    # Axios 封装
+│       │   ├── auth.js
+│       │   ├── kb.js
+│       │   └── chat.js
+│       ├── router/
+│       │   └── index.js
+│       ├── stores/
+│       │   ├── auth.js
+│       │   └── toast.js
+│       └── views/
+│           ├── LoginView.vue
+│           ├── LayoutView.vue
+│           ├── KbView.vue
+│           ├── ChatView.vue
+│           └── HistoryView.vue
+└── kb-qa-project/
+    ├── images/               # 页面截图
+    └── 知识库/               # 示例知识库文件
 ```
 
 ---
 
-## 🚀 快速开始
+## 运行环境
 
-### 前置条件
+建议环境：
 
-- Python >= 3.11
-- Node.js >= 18
-- 智谱 AI API Key（[免费申请](https://open.bigmodel.cn/usercenter/apikeys)）
+- Python 3.11+
+- Node.js 18+
+- npm 9+
+- 智谱 AI API Key
 
 ---
 
-### 1. 后端启动
+## 快速开始
 
-```bash
-# 进入后端目录
-cd kb-qa-backend
+### 一、启动后端
 
-# 创建并激活虚拟环境
-python -m venv venv  
-source venv/bin/activate        # Windows: venv\Scripts\activate
+进入后端目录：
 
-# 安装依赖
-pip install -r requirements.txt
+- 目录：`kb-qa-backend`
 
-# 配置环境变量
-cp .env.example .env
-# 编辑 .env，填入你的 ZHIPUAI_API_KEY
-```
+建议步骤：
 
-编辑 `.env`：
+1. 创建虚拟环境
+2. 安装依赖
+3. 创建 `.env`
+4. 启动 Flask 服务
+
+后端依赖见：
+
+- `flask==3.0.3`
+- `flask-cors==4.0.1`
+- `flask-sqlalchemy==3.1.1`
+- `flask-jwt-extended==4.6.0`
+- `werkzeug==3.0.3`
+- `zhipuai>=2.1.5`
+- `python-dotenv==1.0.1`
+- `sniffio>=1.3.0`
+
+你需要在 `kb-qa-backend` 下自行创建 `.env` 文件，常用配置如下：
 
 ```env
 JWT_SECRET_KEY=your-secret-key
-ZHIPUAI_API_KEY=your-api-key-here   # ← 必填
-ZHIPUAI_MODEL=glm-4-flash           # 免费模型，推荐
+ZHIPUAI_API_KEY=your-api-key-here
+ZHIPUAI_MODEL=glm-4-flash
 UPLOAD_FOLDER=uploads
 ```
 
-```bash
-# 启动后端（自动初始化数据库）
-python app.py
-# ✅ 后端运行在 http://localhost:5001
-```
+说明：
+
+- `ZHIPUAI_API_KEY` 必填
+- `ZHIPUAI_MODEL` 默认推荐 `glm-4-flash`
+- `UPLOAD_FOLDER` 默认可使用 `uploads`
+
+启动后端后，默认运行地址：
+
+- `http://localhost:5001`
 
 ---
 
-### 2. 前端启动
+### 二、启动前端
 
-```bash
-# 进入前端目录
-cd kb-qa-frontend
+进入前端目录：
 
-# 安装依赖
-npm install
+- 目录：`kb-qa-frontend`
 
-# 启动开发服务器
-npm run dev
-# ✅ 前端运行在 http://localhost:5173
-```
+执行：
 
-打开浏览器访问 [http://localhost:5173](http://localhost:5173)
+1. 安装依赖
+2. 启动开发服务器
+
+前端默认地址：
+
+- `http://localhost:5173`
 
 ---
 
-### 3. 登录
+### 三、默认账号
 
-系统预置了两个账号，无需注册：
+系统会自动初始化两个测试账号：
 
 | 用户名 | 密码 |
-|--------|------|
+|---|---|
 | admin | admin123 |
 | demo | demo123 |
 
 ---
 
-## 📡 接口文档
+## 使用说明
 
-所有接口以 `/api` 为前缀，需要认证的接口请在请求头携带：
+### 1. 上传知识库
+进入“知识库管理”页面，上传 `.txt` 文件。
 
-```
-Authorization: Bearer <token>
-```
+### 2. 开始问答
+进入“AI 问答”页面：
 
-### 认证
+- 先选择知识库
+- 发送第一条问题后，系统会自动创建一个会话
+- 后续追问会自动沿用当前会话上下文
 
-| 方法 | 路径 | 说明 | 认证 |
-|------|------|------|:----:|
-| POST | `/api/auth/login` | 用户登录，返回 JWT Token | ❌ |
-| GET | `/api/auth/me` | 获取当前用户信息 | ✅ |
+### 3. 新建会话
+如果你想基于同一个知识库讨论不同主题，可以点击：
 
-**登录示例：**
+- `新建会话`
 
-```bash
-curl -X POST http://localhost:5001/api/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"username": "admin", "password": "admin123"}'
-```
+这样每个主题都会成为独立会话，不会互相干扰。
 
-### 知识库
+### 4. 恢复历史会话
+进入“会话历史”页后，可以：
 
-| 方法 | 路径 | 说明 | 认证 |
-|------|------|------|:----:|
-| GET | `/api/kb` | 获取知识库列表 | ✅ |
-| POST | `/api/kb/upload` | 上传 TXT 文件（form-data，字段名 `file`） | ✅ |
-| DELETE | `/api/kb/:id` | 删除知识库（同时删除关联历史） | ✅ |
+- 查看某个知识库下的全部会话
+- 点击“继续聊天”恢复某个历史会话
 
-### 问答
+---
 
-| 方法 | 路径 | 说明 | 认证 |
-|------|------|------|:----:|
-| POST | `/api/chat` | AI 问答，Body: `{ kb_id, question }` | ✅ |
-| GET | `/api/chat/history` | 获取历史，Query: `?kb_id=&page=&per_page=` | ✅ |
-| DELETE | `/api/chat/history/:id` | 删除单条历史 | ✅ |
+## 接口概览
 
-### 其他
+所有接口统一以 `/api` 为前缀。
+
+需要鉴权的接口，请在请求头中携带：
+
+`Authorization: Bearer <token>`
+
+### 认证接口
 
 | 方法 | 路径 | 说明 |
-|------|------|------|
-| GET | `/api/health` | 健康检查 |
+|---|---|---|
+| POST | `/api/auth/login` | 登录 |
+| GET | `/api/auth/me` | 获取当前用户信息 |
+
+### 知识库接口
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/kb` | 获取知识库列表 |
+| POST | `/api/kb/upload` | 上传知识库 TXT 文件 |
+| DELETE | `/api/kb/<id>` | 删除知识库 |
+
+### 会话接口
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/chat/sessions` | 获取会话列表 |
+| POST | `/api/chat/sessions` | 创建会话 |
+| GET | `/api/chat/sessions/<session_id>` | 获取会话详情及消息列表 |
+| DELETE | `/api/chat/sessions/<session_id>` | 删除整个会话 |
+
+### 问答接口
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| POST | `/api/chat` | 发起问答，支持 `session_id` 持续会话 |
+| GET | `/api/chat/history` | 获取问答历史，可按 `kb_id`、`session_id` 筛选 |
+| DELETE | `/api/chat/history/<history_id>` | 删除单条问答记录 |
+
+### 健康检查
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/health` | 服务健康检查 |
 
 ---
 
-## 🤖 AI 模型说明
+## 关键数据模型
 
-本项目使用 [智谱 AI](https://open.bigmodel.cn/) 的大模型接口，支持以下模型（在 `.env` 中配置 `ZHIPUAI_MODEL`）：
+### User
+用户表，保存预置登录账号。
 
-| 模型 | 特点 | 费用 |
-|------|------|------|
-| `glm-4-flash` | 速度最快，适合开发测试 | **免费** |
-| `glm-4-air` | 性价比高，效果均衡 | 按量计费 |
-| `glm-4` | 效果最强 | 按量计费 |
+### KnowledgeBase
+知识库表，保存上传的 `.txt` 文件信息。
 
-> 知识库内容超过 12,000 字符时会自动截断，以适配模型上下文窗口。
+### ChatSession
+会话表，表示一个独立聊天主题。
 
----
-
-## ⚙️ 生产部署建议
-
-```bash
-# 后端使用 gunicorn 部署
-pip install gunicorn
-gunicorn -w 4 -b 0.0.0.0:5001 app:app
-
-# 前端构建静态文件
-cd kb-qa-frontend
-npm run build
-# 将 dist/ 目录部署到 Nginx 或 CDN
-```
-
-Nginx 反向代理参考配置：
-
-```nginx
-server {
-    listen 80;
-    server_name your-domain.com;
-
-    # 前端静态文件
-    location / {
-        root /path/to/kb-qa-frontend/dist;
-        try_files $uri $uri/ /index.html;
-    }
-
-    # 后端 API 代理
-    location /api/ {
-        proxy_pass http://127.0.0.1:5001;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-    }
-}
-```
+### ChatHistory
+问答历史表，每一轮问答都归属于某个会话。
 
 ---
 
-## 📝 注意事项
+## AI 说明
 
-- `.env` 文件包含 API Key 等敏感信息，**已加入 `.gitignore`，请勿提交**
-- `uploads/` 目录存储用户上传的文件，**已加入 `.gitignore`**，部署时需手动创建
-- SQLite 数据库文件 `kb_qa.db` **已加入 `.gitignore`**，生产环境建议换用 PostgreSQL / MySQL
-- 默认 Token 永不过期，生产环境建议在 `app.py` 中设置合理的过期时间
+本项目目前使用的方式是：
+
+- 读取知识库文本
+- 注入系统 Prompt
+- 携带最近几轮上下文
+- 调用智谱 AI 生成答案
+
+当前实现特点：
+
+- 适合中小型 TXT 知识库
+- 支持连续追问
+- 已支持会话恢复
+
+当前限制：
+
+- 知识库内容超过一定长度时会截断
+- 还不是向量检索式 RAG
+
+如果后续知识库规模变大，建议升级为：
+
+- 文本切片
+- 向量化
+- 相似度召回
+- Top-K 上下文拼接
+- 大模型最终生成
 
 ---
 
-## 📄 License
+## 页面说明
+
+当前主要页面：
+
+- 登录页
+- 知识库管理页
+- AI 问答页
+- 会话历史页
+
+项目中已有截图资源，位于：
+
+- `kb-qa-project/images/`
+
+> 注意：由于项目近期已经升级为“会话式聊天”，如果截图仍是旧版页面，可重新截图后替换。
+
+---
+
+## 开发说明
+
+### 数据库说明
+项目默认使用 SQLite，数据库文件位于后端目录下自动生成。
+
+当前已做兼容处理：
+
+- 首次启动自动建表
+- 对旧版数据库自动补齐 `chat_sessions` 表和 `session_id` 字段
+
+### 适合继续扩展的方向
+你可以在当前基础上继续扩展：
+
+- 会话重命名
+- AI 自动生成会话标题
+- 单条消息重试 / 重新回答
+- Markdown 渲染
+- 文件分段检索
+- 向量数据库接入
+- 用户注册与权限管理
+
+---
+
+## 常见问题
+
+### 1. 为什么 AI 说“知识库中未找到相关信息”？
+因为当前 Prompt 被限制为：
+
+- 尽量只根据知识库内容回答
+- 不允许随意编造知识库外信息
+
+这属于预期行为。
+
+### 2. 为什么大文件效果不好？
+因为当前实现是直接读取 TXT 内容，并有上下文长度限制。对于超长知识库，更建议做 RAG 检索增强。
+
+### 3. 刷新页面后还能继续问吗？
+可以。
+
+因为现在已经改造成会话式聊天，历史消息保存在数据库中，刷新后可恢复会话继续提问。
+
+---
+
+## 部署建议
+
+开发环境下可直接前后端分开运行。
+
+生产部署建议：
+
+- 前端：`npm run build` 后部署静态资源
+- 后端：使用 Gunicorn / Waitress / Nginx 反向代理
+- 数据库：生产环境建议替换为 MySQL 或 PostgreSQL
+
+如果你部署到 Linux 服务器，推荐：
+
+- Nginx 托管前端静态资源
+- Gunicorn 启动 Flask
+- `/api` 反向代理到 Flask 服务
+
+---
+
+## 注意事项
+
+- `.env` 包含敏感信息，不要提交到仓库
+- `uploads/` 中是用户上传的知识库文件，注意备份和权限控制
+- SQLite 适合开发和轻量项目，不适合高并发生产场景
+- 当前 Token 默认不过期，如用于生产请自行补充过期时间和刷新机制
+
+---
+
+## License
 
 MIT

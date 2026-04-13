@@ -3,9 +3,11 @@ AI 问答服务
 - 读取知识库 TXT 文件内容
 - 构建 Prompt，调用智谱 AI 大模型（zhipuai SDK）
 - 默认模型：glm-4-flash（免费，速度快）
+- 支持携带最近几轮对话上下文，实现连续追问
 """
 
 import os
+from typing import Iterable
 from zhipuai import ZhipuAI
 from dotenv import load_dotenv
 
@@ -19,6 +21,8 @@ _model = os.getenv("ZHIPUAI_MODEL", "glm-4-flash")
 
 # 知识库内容最大字符数（防止超出上下文窗口）
 MAX_CONTEXT_CHARS = 12000
+# 最多携带的历史消息条数（不含当前问题）
+MAX_HISTORY_MESSAGES = 10
 
 
 def load_knowledge_base(file_path: str) -> str:
@@ -54,13 +58,44 @@ def build_system_prompt(kb_content: str) -> str:
 """
 
 
-def ask_question(file_path: str, question: str) -> dict:
+def build_chat_messages(kb_content: str, question: str, history: Iterable[dict] | None = None) -> list[dict]:
+    """构建多轮对话消息列表。"""
+    messages = [
+        {"role": "system", "content": build_system_prompt(kb_content)}
+    ]
+
+    normalized_history = []
+    for item in history or []:
+        if not isinstance(item, dict):
+            continue
+
+        role = str(item.get("role", "")).strip().lower()
+        content = str(item.get("content", "")).strip()
+
+        if role not in {"user", "assistant"}:
+            continue
+        if not content:
+            continue
+
+        normalized_history.append({"role": role, "content": content})
+
+    if len(normalized_history) > MAX_HISTORY_MESSAGES:
+        normalized_history = normalized_history[-MAX_HISTORY_MESSAGES:]
+
+    messages.extend(normalized_history)
+    messages.append({"role": "user", "content": question})
+    return messages
+
+
+def ask_question(file_path: str, question: str, history: list[dict] | None = None) -> dict:
     """
     向大模型提问，返回回答结果。
 
     Args:
         file_path: 知识库 TXT 文件路径
-        question:  用户问题
+        question: 用户当前问题
+        history: 最近几轮历史消息，格式如
+                 [{"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}]
 
     Returns:
         {
@@ -72,13 +107,11 @@ def ask_question(file_path: str, question: str) -> dict:
     """
     try:
         kb_content = load_knowledge_base(file_path)
+        messages = build_chat_messages(kb_content, question, history)
 
         response = _client.chat.completions.create(
             model=_model,
-            messages=[
-                {"role": "system", "content": build_system_prompt(kb_content)},
-                {"role": "user", "content": question},
-            ],
+            messages=messages,
             temperature=0.3,      # 较低温度，保证回答准确性
             max_tokens=2048,
         )

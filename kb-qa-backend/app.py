@@ -1,5 +1,5 @@
 """
-Flask 主应用 
+Flask 主应用   
 接口列表：
   POST   /api/auth/login              用户登录
   GET    /api/auth/me                 获取当前用户信息
@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 
 from dotenv import load_dotenv
 from flask import Flask, request, jsonify
+from sqlalchemy import text
 from flask_cors import CORS
 from flask_jwt_extended import (
     JWTManager,
@@ -29,7 +30,7 @@ from flask_jwt_extended import (
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
 
-from models import db, User, KnowledgeBase, ChatHistory
+from models import db, User, KnowledgeBase, ChatSession, ChatHistory
 from ai_service import ask_question
 
 # ── 加载环境变量 ──────────────────────────────────────────────────────────────
@@ -85,10 +86,59 @@ def get_current_user() -> User | None:
     return db.session.get(User, int(user_id))
 
 
+def generate_session_title(question: str) -> str:
+    """根据首轮问题生成会话标题。"""
+    title = (question or "").strip().replace("\n", " ")
+    if not title:
+        return "新对话"
+    return title[:30] + ("..." if len(title) > 30 else "")
+
+
+def ensure_chat_schema():
+    """兼容旧版 SQLite：补齐会话表和 session_id 字段。"""
+    with db.engine.begin() as conn:
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS chat_sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                kb_id INTEGER NOT NULL,
+                title VARCHAR(200) NOT NULL DEFAULT '新对话',
+                created_at DATETIME,
+                updated_at DATETIME,
+                FOREIGN KEY(user_id) REFERENCES users(id),
+                FOREIGN KEY(kb_id) REFERENCES knowledge_bases(id)
+            )
+        """))
+
+        columns = {
+            row[1]
+            for row in conn.execute(text("PRAGMA table_info(chat_histories)")).fetchall()
+        }
+        if "session_id" not in columns:
+            conn.execute(text("ALTER TABLE chat_histories ADD COLUMN session_id INTEGER"))
+
+
+def build_session_history_messages(session_id: int, limit: int = 5) -> list[dict]:
+    """从数据库中读取会话最近几轮历史，拼装为模型可用的 messages。"""
+    records = (
+        ChatHistory.query
+        .filter_by(session_id=session_id)
+        .order_by(ChatHistory.created_at.asc())
+        .all()
+    )[-limit:]
+
+    messages = []
+    for item in records:
+        messages.append({"role": "user", "content": item.question})
+        messages.append({"role": "assistant", "content": item.answer})
+    return messages
+
+
 # ── 数据库初始化 & 预置账号 ───────────────────────────────────────────────────
 def init_db():
     """创建表并预置默认账号"""
     db.create_all()
+    ensure_chat_schema()
 
     # 预置账号列表（用户名: 密码）
     preset_users = {
@@ -234,8 +284,12 @@ def delete_kb(kb_id):
     if os.path.exists(kb.file_path):
         os.remove(kb.file_path)
 
-    # 删除关联历史
-    ChatHistory.query.filter_by(kb_id=kb_id).delete()
+    # 删除关联会话和历史
+    sessions = ChatSession.query.filter_by(kb_id=kb_id, user_id=user.id).all()
+    for session in sessions:
+        db.session.delete(session)
+
+    ChatHistory.query.filter_by(kb_id=kb_id, user_id=user.id).delete()
 
     db.session.delete(kb)
     db.session.commit()
@@ -247,12 +301,112 @@ def delete_kb(kb_id):
 # 问答接口
 # ══════════════════════════════════════════════════════════════════════════════
 
+@app.route("/api/chat/sessions", methods=["GET"])
+@jwt_required()
+def list_chat_sessions():
+    """获取会话列表。Query: ?kb_id=1&page=1&per_page=20"""
+    user = get_current_user()
+
+    kb_id = request.args.get("kb_id", type=int)
+    page = request.args.get("page", 1, type=int)
+    per_page = min(request.args.get("per_page", 20, type=int), 100)
+
+    query = ChatSession.query.filter_by(user_id=user.id)
+    if kb_id:
+        query = query.filter_by(kb_id=kb_id)
+
+    pagination = (
+        query
+        .order_by(ChatSession.updated_at.desc(), ChatSession.created_at.desc())
+        .paginate(page=page, per_page=per_page, error_out=False)
+    )
+
+    return success({
+        "items": [item.to_dict() for item in pagination.items],
+        "total": pagination.total,
+        "page": page,
+        "per_page": per_page,
+        "pages": pagination.pages,
+    })
+
+
+@app.route("/api/chat/sessions", methods=["POST"])
+@jwt_required()
+def create_chat_session():
+    """新建会话。Body: { "kb_id": 1, "title": "可选标题" }"""
+    user = get_current_user()
+    data = request.get_json() or {}
+
+    kb_id = data.get("kb_id")
+    title = (data.get("title") or "").strip()
+
+    if not kb_id:
+        return fail("请指定知识库 kb_id")
+
+    kb = KnowledgeBase.query.filter_by(id=kb_id, user_id=user.id).first()
+    if not kb:
+        return fail("知识库不存在或无权限", 404)
+
+    session = ChatSession(
+        user_id=user.id,
+        kb_id=kb_id,
+        title=title or "新对话",
+    )
+    db.session.add(session)
+    db.session.commit()
+
+    return success(session.to_dict(), "会话创建成功", 201)
+
+
+@app.route("/api/chat/sessions/<int:session_id>", methods=["GET"])
+@jwt_required()
+def get_chat_session_detail(session_id):
+    """获取单个会话详情及消息列表。"""
+    user = get_current_user()
+    session = ChatSession.query.filter_by(id=session_id, user_id=user.id).first()
+
+    if not session:
+        return fail("会话不存在或无权限", 404)
+
+    messages = (
+        ChatHistory.query
+        .filter_by(session_id=session_id, user_id=user.id)
+        .order_by(ChatHistory.created_at.asc())
+        .all()
+    )
+
+    return success({
+        **session.to_dict(),
+        "messages": [item.to_dict() for item in messages],
+    })
+
+
+@app.route("/api/chat/sessions/<int:session_id>", methods=["DELETE"])
+@jwt_required()
+def delete_chat_session(session_id):
+    """删除会话及其全部消息。"""
+    user = get_current_user()
+    session = ChatSession.query.filter_by(id=session_id, user_id=user.id).first()
+
+    if not session:
+        return fail("会话不存在或无权限", 404)
+
+    db.session.delete(session)
+    db.session.commit()
+    return success(msg="会话已删除")
+
+
 @app.route("/api/chat", methods=["POST"])
 @jwt_required()
 def chat():
     """
     AI 问答
-    Body: { "kb_id": 1, "question": "xxx" }
+    Body: {
+      "kb_id": 1,
+      "session_id": 1,
+      "question": "xxx",
+      "history": []
+    }
     """
     user = get_current_user()
     data = request.get_json()
@@ -261,7 +415,9 @@ def chat():
         return fail("请求体不能为空")
 
     kb_id = data.get("kb_id")
+    session_id = data.get("session_id")
     question = data.get("question", "").strip()
+    chat_history = data.get("history", [])
 
     if not kb_id:
         return fail("请指定知识库 kb_id")
@@ -269,8 +425,9 @@ def chat():
         return fail("问题不能为空")
     if len(question) > 1000:
         return fail("问题长度不能超过 1000 字符")
+    if chat_history is not None and not isinstance(chat_history, list):
+        return fail("history 必须是数组")
 
-    # 验证知识库归属
     kb = KnowledgeBase.query.filter_by(id=kb_id, user_id=user.id).first()
     if not kb:
         return fail("知识库不存在或无权限", 404)
@@ -278,24 +435,52 @@ def chat():
     if not os.path.exists(kb.file_path):
         return fail("知识库文件丢失，请重新上传", 500)
 
-    # 调用 AI 服务
-    result = ask_question(kb.file_path, question)
+    session = None
+    if session_id:
+        session = ChatSession.query.filter_by(id=session_id, user_id=user.id).first()
+        if not session:
+            return fail("会话不存在或无权限", 404)
+        if session.kb_id != kb.id:
+            return fail("会话与知识库不匹配")
+    else:
+        session = ChatSession(
+            user_id=user.id,
+            kb_id=kb.id,
+            title=generate_session_title(question),
+        )
+        db.session.add(session)
+        db.session.flush()
+
+    # 优先使用服务端已保存的会话历史，支持刷新后继续聊天
+    history_messages = build_session_history_messages(session.id)
+    if not history_messages:
+        history_messages = chat_history or []
+
+    result = ask_question(kb.file_path, question, history_messages)
 
     if not result["success"]:
+        db.session.rollback()
         return fail(f"AI 服务异常：{result['error']}", 500)
 
-    # 保存历史记录
     history = ChatHistory(
         user_id=user.id,
         kb_id=kb_id,
+        session_id=session.id,
         question=question,
         answer=result["answer"],
         tokens_used=result["tokens_used"],
     )
     db.session.add(history)
+
+    if history.question and session.title == "新对话":
+        session.title = generate_session_title(history.question)
+    session.updated_at = datetime.now(timezone.utc)
+
     db.session.commit()
 
     return success({
+        "session_id": session.id,
+        "session_title": session.title,
         "history_id": history.id,
         "question": question,
         "answer": result["answer"],
@@ -310,18 +495,21 @@ def chat():
 def get_history():
     """
     获取问答历史
-    Query: ?kb_id=1&page=1&per_page=20
+    Query: ?kb_id=1&session_id=1&page=1&per_page=20
     """
     user = get_current_user()
 
     kb_id = request.args.get("kb_id", type=int)
+    session_id = request.args.get("session_id", type=int)
     page = request.args.get("page", 1, type=int)
     per_page = request.args.get("per_page", 20, type=int)
-    per_page = min(per_page, 100)  # 最多 100 条
+    per_page = min(per_page, 100)
 
     query = ChatHistory.query.filter_by(user_id=user.id)
     if kb_id:
         query = query.filter_by(kb_id=kb_id)
+    if session_id:
+        query = query.filter_by(session_id=session_id)
 
     pagination = (
         query
@@ -348,7 +536,14 @@ def delete_history(history_id):
     if not history:
         return fail("记录不存在或无权限", 404)
 
+    session = history.session
     db.session.delete(history)
+    if session and not ChatHistory.query.filter(
+        ChatHistory.session_id == session.id,
+        ChatHistory.id != history.id,
+    ).first():
+        db.session.delete(session)
+
     db.session.commit()
 
     return success(msg="历史记录已删除")
