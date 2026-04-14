@@ -8,7 +8,8 @@ Flask 主应用
   POST   /api/kb/upload               上传 TXT 知识库
   DELETE /api/kb/<kb_id>              删除知识库
 
-  POST   /api/chat                    AI 问答
+  POST   /api/chat                    AI 问答（阻塞式）
+  POST   /api/chat/stream             AI 问答（SSE 流式）
   GET    /api/chat/history            获取问答历史
   DELETE /api/chat/history/<id>       删除单条历史
 """
@@ -19,7 +20,7 @@ import uuid
 from datetime import datetime, timezone
 
 from dotenv import load_dotenv
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, Response, stream_with_context
 from sqlalchemy import text
 from flask_cors import CORS
 from flask_jwt_extended import (
@@ -32,7 +33,7 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
 
 from models import db, User, KnowledgeBase, ChatSession, ChatHistory
-from ai_service import ask_question
+from ai_service import ask_question, ask_question_stream
 from document_loader import is_supported_document, extract_document_text, SUPPORTED_EXTENSIONS
 from rag_service import (
     index_knowledge_base,
@@ -71,6 +72,16 @@ jwt = JWTManager(app)
 
 
 # ── 工具函数 ──────────────────────────────────────────────────────────────────
+def _friendly_error(error_msg: str) -> str:
+    """将 AI 服务异常信息友好化。"""
+    msg = str(error_msg)
+    if "api_key" in msg.lower() or "authentication" in msg.lower() or "invalid" in msg.lower():
+        return "API Key 无效或未配置，请检查 .env 文件中的 ZHIPUAI_API_KEY"
+    if "connection" in msg.lower() or "timeout" in msg.lower():
+        return "连接智谱 AI 超时，请检查网络连接"
+    return msg
+
+
 def success(data=None, msg="success", code=200):
     """统一成功响应"""
     resp = {"code": code, "msg": msg}
@@ -373,6 +384,83 @@ def reindex_kb(kb_id):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# 问答公共前置逻辑（任务 2.2）
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _prepare_chat_context(user, data: dict):
+    """
+    问答接口公共前置逻辑：参数校验、kb 权限校验、session 处理、RAG 检索。
+    供流式和非流式接口共用。
+
+    Returns:
+        (ctx_tuple, None)  成功
+        (None, error_response)  校验失败
+    """
+    kb_id = data.get("kb_id")
+    session_id = data.get("session_id")
+    question = data.get("question", "").strip()
+    chat_history = data.get("history", [])
+
+    if not kb_id:
+        return None, fail("请指定知识库 kb_id")
+    if not question:
+        return None, fail("问题不能为空")
+    if len(question) > 1000:
+        return None, fail("问题长度不能超过 1000 字符")
+    if chat_history is not None and not isinstance(chat_history, list):
+        return None, fail("history 必须是数组")
+
+    kb = KnowledgeBase.query.filter_by(id=kb_id, user_id=user.id).first()
+    if not kb:
+        return None, fail("知识库不存在或无权限", 404)
+
+    if not os.path.exists(kb.file_path):
+        return None, fail("知识库文件丢失，请重新上传", 500)
+
+    try:
+        ensure_knowledge_base_index(kb.id, user.id, kb.file_path, kb.name, kb.original_filename or kb.filename)
+    except Exception as e:
+        return None, fail(f"知识库索引不可用：{str(e)}", 500)
+
+    session = None
+    if session_id:
+        session = ChatSession.query.filter_by(id=session_id, user_id=user.id).first()
+        if not session:
+            return None, fail("会话不存在或无权限", 404)
+        if session.kb_id != kb.id:
+            return None, fail("会话与知识库不匹配")
+    else:
+        session = ChatSession(
+            user_id=user.id,
+            kb_id=kb.id,
+            title=generate_session_title(question),
+        )
+        db.session.add(session)
+        db.session.flush()
+
+    history_messages = build_session_history_messages(session.id)
+    if not history_messages:
+        history_messages = chat_history or []
+
+    try:
+        retrieval_result = retrieve_knowledge_context(kb.id, user.id, question)
+    except Exception as e:
+        db.session.rollback()
+        return None, fail(f"知识检索失败：{str(e)}", 500)
+
+    references = [
+        {
+            "content": item["content"],
+            "metadata": item.get("metadata", {}),
+            "distance": item.get("distance"),
+        }
+        for item in retrieval_result["chunks"]
+    ]
+
+    return (kb, session, question, retrieval_result, references, history_messages), None
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # 问答接口
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -475,91 +563,28 @@ def delete_chat_session(session_id):
 @jwt_required()
 def chat():
     """
-    AI 问答
-    Body: {
-      "kb_id": 1,
-      "session_id": 1,
-      "question": "xxx",
-      "history": []
-    }
+    AI 问答（阻塞式）
+    Body: { "kb_id": 1, "session_id": 1, "question": "xxx", "history": [] }
     """
     user = get_current_user()
     data = request.get_json()
-
     if not data:
         return fail("请求体不能为空")
 
-    kb_id = data.get("kb_id")
-    session_id = data.get("session_id")
-    question = data.get("question", "").strip()
-    chat_history = data.get("history", [])
+    ctx, err = _prepare_chat_context(user, data)
+    if err is not None:
+        return err
 
-    if not kb_id:
-        return fail("请指定知识库 kb_id")
-    if not question:
-        return fail("问题不能为空")
-    if len(question) > 1000:
-        return fail("问题长度不能超过 1000 字符")
-    if chat_history is not None and not isinstance(chat_history, list):
-        return fail("history 必须是数组")
-
-    kb = KnowledgeBase.query.filter_by(id=kb_id, user_id=user.id).first()
-    if not kb:
-        return fail("知识库不存在或无权限", 404)
-
-    if not os.path.exists(kb.file_path):
-        return fail("知识库文件丢失，请重新上传", 500)
-
-    try:
-        ensure_knowledge_base_index(kb.id, user.id, kb.file_path, kb.name, kb.original_filename or kb.filename)
-    except Exception as e:
-        return fail(f"知识库索引不可用：{str(e)}", 500)
-
-    session = None
-    if session_id:
-        session = ChatSession.query.filter_by(id=session_id, user_id=user.id).first()
-        if not session:
-            return fail("会话不存在或无权限", 404)
-        if session.kb_id != kb.id:
-            return fail("会话与知识库不匹配")
-    else:
-        session = ChatSession(
-            user_id=user.id,
-            kb_id=kb.id,
-            title=generate_session_title(question),
-        )
-        db.session.add(session)
-        db.session.flush()
-
-    # 优先使用服务端已保存的会话历史，支持刷新后继续聊天
-    history_messages = build_session_history_messages(session.id)
-    if not history_messages:
-        history_messages = chat_history or []
-
-    try:
-        retrieval_result = retrieve_knowledge_context(kb.id, user.id, question)
-    except Exception as e:
-        db.session.rollback()
-        return fail(f"知识检索失败：{str(e)}", 500)
+    kb, session, question, retrieval_result, references, history_messages = ctx
 
     result = ask_question(retrieval_result["context"], question, history_messages)
-
     if not result["success"]:
         db.session.rollback()
         return fail(f"AI 服务异常：{result['error']}", 500)
 
-    references = [
-        {
-            "content": item["content"],
-            "metadata": item.get("metadata", {}),
-            "distance": item.get("distance"),
-        }
-        for item in retrieval_result["chunks"]
-    ]
-
     history = ChatHistory(
         user_id=user.id,
-        kb_id=kb_id,
+        kb_id=kb.id,
         session_id=session.id,
         question=question,
         answer=result["answer"],
@@ -571,7 +596,6 @@ def chat():
     if history.question and session.title == "新对话":
         session.title = generate_session_title(history.question)
     session.updated_at = datetime.now(timezone.utc)
-
     db.session.commit()
 
     return success({
@@ -586,6 +610,113 @@ def chat():
         "retrieved_chunks": len(retrieval_result["chunks"]),
         "created_at": history.created_at.isoformat(),
     })
+
+
+@app.route("/api/chat/stream", methods=["POST"])
+@jwt_required()
+def chat_stream():
+    """
+    AI 问答（SSE 流式，任务 2.1）
+    Body: { "kb_id": 1, "session_id": 1, "question": "xxx", "history": [] }
+    Response: text/event-stream
+      data: {"type": "delta", "content": "..."}
+      data: {"type": "done",  "session_id": 1, "history_id": 1, "tokens_used": 256, "references": [...]}
+      data: {"type": "error", "error": "..."}
+    """
+    user = get_current_user()
+    data = request.get_json()
+    if not data:
+        return fail("请求体不能为空")
+
+    ctx, err = _prepare_chat_context(user, data)
+    if err is not None:
+        return err
+
+    kb, session, question, retrieval_result, references, history_messages = ctx
+
+    # 提前将需要在闭包中使用的标量取出，避免生成器内 SQLAlchemy session 状态问题
+    session_id_val = session.id
+    kb_id_val = kb.id
+    user_id_val = user.id
+    references_json_str = json.dumps(references, ensure_ascii=False)
+    context_text = retrieval_result["context"]
+
+    # 提前 commit，确保 session 已持久化
+    db.session.commit()
+
+    def sse_generator():
+        """SSE 生成器：逐块推送 token，流结束后写入历史（任务 2.3 / 2.4）"""
+        full_answer = []
+        tokens_used = 0
+        history_id = None
+        final_title = generate_session_title(question)
+
+        try:
+            for frame in ask_question_stream(context_text, question, history_messages):
+                frame_type = frame.get("type")
+
+                if frame_type == "delta":
+                    full_answer.append(frame["content"])
+                    yield f"data: {json.dumps(frame, ensure_ascii=False)}\n\n"
+
+                elif frame_type == "done":
+                    tokens_used = frame.get("tokens_used", 0)
+
+                    # 流结束后写入历史（任务 2.4）
+                    with app.app_context():
+                        answer_text = "".join(full_answer)
+                        history_record = ChatHistory(
+                            user_id=user_id_val,
+                            kb_id=kb_id_val,
+                            session_id=session_id_val,
+                            question=question,
+                            answer=answer_text,
+                            references_json=references_json_str,
+                            tokens_used=tokens_used,
+                        )
+                        db.session.add(history_record)
+
+                        sess = db.session.get(ChatSession, session_id_val)
+                        if sess:
+                            if sess.title == "新对话" and question:
+                                sess.title = generate_session_title(question)
+                                final_title = sess.title
+                            sess.updated_at = datetime.now(timezone.utc)
+
+                        db.session.commit()
+                        history_id = history_record.id
+
+                    # 推送结束帧（任务 2.5）
+                    done_frame = {
+                        "type": "done",
+                        "session_id": session_id_val,
+                        "session_title": final_title,
+                        "history_id": history_id,
+                        "tokens_used": tokens_used,
+                        "references": references,
+                        "retrieved_chunks": len(references),
+                    }
+                    yield f"data: {json.dumps(done_frame, ensure_ascii=False)}\n\n"
+
+                elif frame_type == "error":
+                    yield f"data: {json.dumps(frame, ensure_ascii=False)}\n\n"
+
+        except GeneratorExit:
+            # 客户端中止（AbortController），不写入历史
+            pass
+        except Exception as e:
+            err_frame = {"type": "error", "error": _friendly_error(str(e))}
+            yield f"data: {json.dumps(err_frame, ensure_ascii=False)}\n\n"
+
+    # 构造 SSE 响应（任务 2.6 / 2.7）
+    resp = Response(
+        stream_with_context(sse_generator()),
+        mimetype="text/event-stream",
+    )
+    resp.headers["Cache-Control"] = "no-cache"
+    resp.headers["X-Accel-Buffering"] = "no"
+    resp.headers["Connection"] = "keep-alive"
+    return resp
 
 
 @app.route("/api/chat/history", methods=["GET"])

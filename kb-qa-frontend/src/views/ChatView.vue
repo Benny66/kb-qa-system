@@ -97,6 +97,10 @@
               </div>
               <div class="message-bubble" :class="msg.role === 'user' ? 'bubble-user' : 'bubble-ai'">
                 <div class="message-content" v-html="renderContent(msg.content)"></div>
+                <!-- 流式输出中的闪烁光标（任务 4.4） -->
+                <span v-if="msg.streaming" class="streaming-cursor"></span>
+                <!-- 中止标记（任务 4.8） -->
+                <span v-if="msg.aborted" class="aborted-badge">（已中止）</span>
                 <div class="message-meta">
                   {{ formatTime(msg.time) }}
                   <span v-if="msg.tokens" class="token-info">· {{ msg.tokens }} tokens</span>
@@ -108,7 +112,7 @@
               </div>
             </div>
 
-            <div v-if="thinking" class="message-row message-row--ai">
+            <div v-if="thinking && !isStreaming" class="message-row message-row--ai">
               <div class="message-avatar">🤖</div>
               <div class="message-bubble bubble-ai thinking">
                 <span class="dot"></span><span class="dot"></span><span class="dot"></span>
@@ -138,12 +142,21 @@
               新会话
             </button>
             <button
+              v-if="!isStreaming"
               class="btn btn-primary"
               :disabled="!canSend"
               @click="handleSend"
             >
               <span v-if="thinking" class="spinner" style="width:14px;height:14px;border-width:2px"></span>
               {{ thinking ? '回答中...' : '发 送' }}
+            </button>
+            <!-- 停止生成按钮（任务 4.7） -->
+            <button
+              v-else
+              class="btn btn-danger"
+              @click="handleStopStreaming"
+            >
+              ⏹ 停止生成
             </button>
           </div>
         </div>
@@ -179,6 +192,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { listKb } from '@/api/kb'
 import {
   sendChat,
+  sendChatStream,
   getChatSessions,
   createChatSession,
   getChatSessionDetail,
@@ -207,6 +221,10 @@ const referenceDialogVisible = ref(false)
 const activeReferences = ref([])
 const activeReferenceTitle = ref('')
 
+// 新增流式相关状态（任务 4.1）
+const isStreaming = ref(false)
+const abortController = ref(null)
+
 const selectedKb = computed(() =>
   kbList.value.find((k) => k.id === selectedKbId.value) || null
 )
@@ -216,7 +234,8 @@ const canSend = computed(() =>
   inputText.value.trim().length > 0 &&
   inputText.value.length <= 1000 &&
   !thinking.value &&
-  !sessionDetailLoading.value
+  !sessionDetailLoading.value &&
+  !isStreaming.value  // 流式输出期间禁用发送
 )
 
 function buildChatHistory() {
@@ -364,6 +383,7 @@ async function handleSend() {
   const tempId = Date.now()
   inputText.value = ''
 
+  // 添加用户消息
   messages.value.push({
     id: `${tempId}-q`,
     role: 'user',
@@ -372,52 +392,92 @@ async function handleSend() {
   })
   scrollToBottom()
 
+  // 使用流式接口（任务 4.2）
+  isStreaming.value = true
   thinking.value = true
-  try {
-    const res = await sendChat(selectedKbId.value, question, {
+
+  // 预先插入空的 AI 消息气泡，状态为 streaming
+  const aiMessageIndex = messages.value.push({
+    id: `${tempId}-a`,
+    role: 'ai',
+    content: '',
+    time: new Date(),
+    streaming: true,  // 标记为流式输出中
+  }) - 1
+  scrollToBottom()
+
+  // 调用流式接口（任务 4.3）
+  abortController.value = sendChatStream(
+    selectedKbId.value,
+    question,
+    {
       sessionId: activeSessionId.value,
       history,
-    })
+    },
+    {
+      onDelta: (content) => {
+        // 逐字追加到当前 AI 消息（任务 4.3）
+        messages.value[aiMessageIndex].content += content
+        scrollToBottom()
+      },
+      onDone: (data) => {
+        // 流结束处理（任务 4.5）
+        messages.value[aiMessageIndex].streaming = false
+        messages.value[aiMessageIndex].tokens = data.tokens_used
+        messages.value[aiMessageIndex].references = data.references || []
+        messages.value[aiMessageIndex].retrievedChunks = data.retrieved_chunks || 0
 
-    activeSessionId.value = res.data.session_id
-    activeSession.value = {
-      ...(activeSession.value || {}),
-      id: res.data.session_id,
-      kb_id: selectedKbId.value,
-      title: res.data.session_title,
-      updated_at: res.data.created_at,
+        isStreaming.value = false
+        thinking.value = false
+        abortController.value = null
+
+        activeSessionId.value = data.session_id
+        activeSession.value = {
+          ...(activeSession.value || {}),
+          id: data.session_id,
+          kb_id: selectedKbId.value,
+          title: data.session_title,
+          updated_at: new Date().toISOString(),
+        }
+
+        router.replace({
+          path: '/chat',
+          query: {
+            kb_id: selectedKbId.value,
+            session_id: data.session_id,
+          },
+        })
+
+        fetchSessions(false)
+      },
+      onError: (error) => {
+        // 错误处理（任务 4.6）
+        messages.value[aiMessageIndex].content = `❌ 请求失败：${error}`
+        messages.value[aiMessageIndex].streaming = false
+        isStreaming.value = false
+        thinking.value = false
+        abortController.value = null
+        toast.error(`流式问答失败：${error}`)
+      },
+    }
+  )
+}
+
+// 中止流式输出（任务 4.7）
+function handleStopStreaming() {
+  if (abortController.value) {
+    abortController.value.abort()
+    abortController.value = null
+
+    // 标记为中止状态（任务 4.8）
+    const lastAiMsg = messages.value.findLast(msg => msg.role === 'ai')
+    if (lastAiMsg) {
+      lastAiMsg.streaming = false
+      lastAiMsg.aborted = true
     }
 
-    messages.value.push({
-      id: `${tempId}-a`,
-      role: 'ai',
-      content: res.data.answer,
-      tokens: res.data.tokens_used,
-      references: res.data.references || [],
-      retrievedChunks: res.data.retrieved_chunks || 0,
-      time: res.data.created_at,
-    })
-
-    router.replace({
-      path: '/chat',
-      query: {
-        kb_id: selectedKbId.value,
-        session_id: res.data.session_id,
-      },
-    })
-
-    await fetchSessions(false)
-  } catch (e) {
-    messages.value.push({
-      id: `${tempId}-e`,
-      role: 'ai',
-      content: `❌ 请求失败：${e.message}`,
-      time: new Date(),
-    })
-  } finally {
+    isStreaming.value = false
     thinking.value = false
-    await nextTick()
-    scrollToBottom()
   }
 }
 
@@ -696,6 +756,31 @@ onMounted(async () => {
   opacity: .6;
 }
 .token-info { margin-left: 4px; }
+.streaming-cursor {
+  display: inline-block;
+  width: 8px;
+  height: 18px;
+  background: var(--primary);
+  margin-left: 2px;
+  animation: blink 0.8s infinite;
+  vertical-align: text-bottom;
+}
+@keyframes blink {
+  0%, 50% { opacity: 1; }
+  51%, 100% { opacity: 0; }
+}
+.aborted-badge {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-left: 4px;
+}
+.btn-danger {
+  background: var(--danger);
+  color: #fff;
+}
+.btn-danger:hover {
+  background: #dc2626;
+}
 .reference-actions { margin-top: 8px; }
 .reference-btn {
   background: transparent;
@@ -818,3 +903,4 @@ onMounted(async () => {
   color: var(--text-primary);
 }
 </style>
+

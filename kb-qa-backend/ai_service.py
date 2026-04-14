@@ -7,7 +7,7 @@ AI 问答服务
 """
 
 import os
-from typing import Iterable
+from typing import Iterable, Generator
 from zhipuai import ZhipuAI
 from dotenv import load_dotenv
 
@@ -79,6 +79,62 @@ def build_chat_messages(retrieved_context: str, question: str, history: Iterable
     messages.extend(normalized_history)
     messages.append({"role": "user", "content": question})
     return messages
+
+
+def ask_question_stream(
+    retrieved_context: str,
+    question: str,
+    history: list[dict] | None = None,
+) -> Generator[dict, None, None]:
+    """
+    流式问答生成器，逐块 yield 模型输出的 token。
+
+    Yields:
+        {"type": "delta", "content": str}          每个 token 块
+        {"type": "done",  "tokens_used": int}       流正常结束
+        {"type": "error", "error": str}             发生异常
+    """
+    try:
+        # 复用现有函数构建消息列表（任务 1.6）
+        messages = build_chat_messages(retrieved_context, question, history)
+
+        # 使用 stream=True 发起流式请求（任务 1.2）
+        response = _client.chat.completions.create(
+            model=_model,
+            messages=messages,
+            temperature=0.3,
+            max_tokens=2048,
+            stream=True,
+        )
+
+        tokens_used = 0
+        for chunk in response:
+            # 逐块迭代 delta.content，跳过空块（任务 1.2）
+            delta_content = ""
+            if chunk.choices and chunk.choices[0].delta:
+                delta_content = chunk.choices[0].delta.content or ""
+
+            if delta_content:
+                # yield delta 帧（任务 1.3）
+                yield {"type": "delta", "content": delta_content}
+
+            # 尝试从最后一个 chunk 获取 usage
+            if hasattr(chunk, "usage") and chunk.usage:
+                tokens_used = chunk.usage.total_tokens or tokens_used
+
+        # 流正常结束，yield done 帧（任务 1.4）
+        yield {"type": "done", "tokens_used": tokens_used}
+
+    except Exception as e:
+        # 捕获异常，友好化后 yield error 帧（任务 1.5）
+        error_msg = str(e)
+        if "api_key" in error_msg.lower() or "authentication" in error_msg.lower() or "invalid" in error_msg.lower():
+            error_msg = "API Key 无效或未配置，请检查 .env 文件中的 ZHIPUAI_API_KEY"
+        elif "connection" in error_msg.lower() or "timeout" in error_msg.lower():
+            error_msg = "连接智谱 AI 超时，请检查网络连接"
+        elif "model" in error_msg.lower() and "not found" in error_msg.lower():
+            error_msg = f"模型 {_model} 不存在，请检查 .env 文件中的 ZHIPUAI_MODEL"
+        yield {"type": "error", "error": error_msg}
 
 
 def ask_question(retrieved_context: str, question: str, history: list[dict] | None = None) -> dict:
