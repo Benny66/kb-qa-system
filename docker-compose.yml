@@ -1,0 +1,36 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: ./kb-qa-backend
+      dockerfile: Dockerfile
+    container_name: kb-qa-backend
+    ports:
+      - "5001:5001"
+    env_file:
+      - ./kb-qa-backend/.env
+    volumes:
+      - ./kb-qa-backend/uploads:/app/uploads
+      - ./kb-qa-backend/kb_qa.db:/app/kb_qa.db
+      - ./kb-qa-backend/chroma_db:/app/chroma_db
+    restart: always
+    networks:
+      - kb-qa-network
+
+  frontend:
+    build:
+      context: ./kb-qa-frontend
+      dockerfile: Dockerfile
+    container_name: kb-qa-frontend
+    ports:
+      - "8080:80"
+    depends_on:
+      - backend
+    restart: always
+    networks:
+      - kb-qa-network
+
+networks:
+  kb-qa-network:
+    driver: bridge

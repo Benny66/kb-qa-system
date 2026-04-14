@@ -71,10 +71,55 @@
 | 层级 | 技术 |
 |---|---|
 | 前端 | Vue 3、Vite、Pinia、Vue Router、Axios |
-| 后端 | Python、Flask、Flask-CORS、Flask-SQLAlchemy、Flask-JWT-Extended |
+| 后端 | Python、Flask、Flask-CORS、Flask-SQLAlchemy |
 | 数据库 | SQLite |
 | 向量数据库 | ChromaDB |
 | AI | 智谱 AI（默认 `glm-4-flash`，Embedding 默认 `embedding-3`） |
+
+---
+
+## 快速开始
+
+### 1. 克隆项目
+```bash
+git clone https://github.com/your-username/kb-qa-system.git
+cd kb-qa-system
+```
+
+### 2. Docker 一键部署 (推荐)
+
+如果你已经安装了 Docker 和 Docker Compose，可以使用以下命令快速启动整个系统：
+
+1. **配置环境变量**：
+   复制 `kb-qa-backend/.env.example` 为 `kb-qa-backend/.env` 并填入你的 `ZHIPUAI_API_KEY`：
+   ```bash
+   cp kb-qa-backend/.env.example kb-qa-backend/.env
+   # 编辑 kb-qa-backend/.env 并填入 API Key
+   ```
+
+2. **启动服务**：
+   ```bash
+   docker compose up -d
+   ```
+
+3. **访问系统**：
+   - 前端：[http://localhost:8080](http://localhost:8080)
+   - 后端 API：[http://localhost:5001](http://localhost:5001)
+
+### 3. 手动本地运行
+
+#### 后端启动
+1. 进入目录：`cd kb-qa-backend`
+2. 创建虚拟环境并激活：`python -m venv venv` 
+3. 安装依赖：`pip install -r requirements.txt`
+4. 配置 `.env` 文件。
+5. 启动：`python app.py`
+
+#### 前端启动
+1. 进入目录：`cd kb-qa-frontend`
+2. 安装依赖：`npm install`
+3. 启动开发服务器：`npm run dev`
+4. 访问：[http://localhost:5173](http://localhost:5173)
 
 ---
 
