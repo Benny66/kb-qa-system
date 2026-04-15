@@ -32,7 +32,7 @@ from flask_jwt_extended import (
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
 
-from models import db, User, KnowledgeBase, ChatSession, ChatHistory
+from models import db, User, KnowledgeBase, ChatSession, ChatHistory, LLMConfig
 from ai_service import ask_question, ask_question_stream
 from document_loader import is_supported_document, extract_document_text, SUPPORTED_EXTENSIONS
 from rag_service import (
@@ -146,6 +146,29 @@ def ensure_chat_schema():
         if "original_filename" not in kb_columns:
             conn.execute(text("ALTER TABLE knowledge_bases ADD COLUMN original_filename VARCHAR(256)"))
 
+        # 补齐 llm_configs 表
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS llm_configs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name VARCHAR(128) NOT NULL,
+                provider VARCHAR(64) NOT NULL,
+                api_key VARCHAR(256) NOT NULL,
+                base_url VARCHAR(512),
+                model_name VARCHAR(128) NOT NULL,
+                embedding_model_name VARCHAR(128),
+                is_default BOOLEAN DEFAULT 0,
+                created_at DATETIME,
+                updated_at DATETIME
+            )
+        """))
+
+        llm_columns = {
+            row[1]
+            for row in conn.execute(text("PRAGMA table_info(llm_configs)")).fetchall()
+        }
+        if "embedding_model_name" not in llm_columns:
+            conn.execute(text("ALTER TABLE llm_configs ADD COLUMN embedding_model_name VARCHAR(128)"))
+
 
 def build_session_history_messages(session_id: int, limit: int = 5) -> list[dict]:
     """从数据库中读取会话最近几轮历史，拼装为模型可用的 messages。"""
@@ -165,11 +188,11 @@ def build_session_history_messages(session_id: int, limit: int = 5) -> list[dict
 
 # ── 数据库初始化 & 预置账号 ───────────────────────────────────────────────────
 def init_db():
-    """创建表并预置默认账号"""
+    """创建表并预置默认账号及初始 LLM 配置"""
     db.create_all()
     ensure_chat_schema()
 
-    # 预置账号列表（用户名: 密码）
+    # 1. 预置账号列表（用户名: 密码）
     preset_users = {
         "admin": "admin123",
         "demo": "demo123",
@@ -182,6 +205,21 @@ def init_db():
                 password_hash=generate_password_hash(password),
             )
             db.session.add(user)
+
+    # 2. 预置初始 LLM 配置（从 .env 迁移）
+    if not LLMConfig.query.first():
+        zhipu_api_key = os.getenv("ZHIPUAI_API_KEY")
+        if zhipu_api_key:
+            default_config = LLMConfig(
+                name="系统默认 (智谱)",
+                provider="zhipuai",
+                api_key=zhipu_api_key,
+                model_name=os.getenv("ZHIPUAI_MODEL", "glm-4-flash"),
+                embedding_model_name=os.getenv("ZHIPUAI_EMBEDDING_MODEL", "embedding-3"),
+                is_default=True
+            )
+            db.session.add(default_config)
+            print("✅ 已从 .env 迁移智谱 AI 配置到数据库")
 
     db.session.commit()
     print("✅ 数据库初始化完成，预置账号：admin/admin123, demo/demo123")
@@ -417,8 +455,10 @@ def _prepare_chat_context(user, data: dict):
     if not os.path.exists(kb.file_path):
         return None, fail("知识库文件丢失，请重新上传", 500)
 
+    config_id = data.get("config_id")
+
     try:
-        ensure_knowledge_base_index(kb.id, user.id, kb.file_path, kb.name, kb.original_filename or kb.filename)
+        ensure_knowledge_base_index(kb.id, user.id, kb.file_path, kb.name, kb.original_filename or kb.filename, config_id=config_id)
     except Exception as e:
         return None, fail(f"知识库索引不可用：{str(e)}", 500)
 
@@ -443,7 +483,7 @@ def _prepare_chat_context(user, data: dict):
         history_messages = chat_history or []
 
     try:
-        retrieval_result = retrieve_knowledge_context(kb.id, user.id, question)
+        retrieval_result = retrieve_knowledge_context(kb.id, user.id, question, config_id=config_id)
     except Exception as e:
         db.session.rollback()
         return None, fail(f"知识检索失败：{str(e)}", 500)
@@ -457,7 +497,9 @@ def _prepare_chat_context(user, data: dict):
         for item in retrieval_result["chunks"]
     ]
 
-    return (kb, session, question, retrieval_result, references, history_messages), None
+    config_id = data.get("config_id")
+
+    return (kb, session, question, retrieval_result, references, history_messages, config_id), None
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -575,9 +617,9 @@ def chat():
     if err is not None:
         return err
 
-    kb, session, question, retrieval_result, references, history_messages = ctx
+    kb, session, question, retrieval_result, references, history_messages, config_id = ctx
 
-    result = ask_question(retrieval_result["context"], question, history_messages)
+    result = ask_question(retrieval_result["context"], question, history_messages, config_id)
     if not result["success"]:
         db.session.rollback()
         return fail(f"AI 服务异常：{result['error']}", 500)
@@ -632,7 +674,7 @@ def chat_stream():
     if err is not None:
         return err
 
-    kb, session, question, retrieval_result, references, history_messages = ctx
+    kb, session, question, retrieval_result, references, history_messages, config_id = ctx
 
     # 提前将需要在闭包中使用的标量取出，避免生成器内 SQLAlchemy session 状态问题
     session_id_val = session.id
@@ -652,7 +694,7 @@ def chat_stream():
         final_title = generate_session_title(question)
 
         try:
-            for frame in ask_question_stream(context_text, question, history_messages):
+            for frame in ask_question_stream(context_text, question, history_messages, config_id):
                 frame_type = frame.get("type")
 
                 if frame_type == "delta":
@@ -776,6 +818,94 @@ def delete_history(history_id):
     db.session.commit()
 
     return success(msg="历史记录已删除")
+
+
+# ── 大模型配置管理 ────────────────────────────────────────────────────────────
+
+@app.route("/api/llm-configs", methods=["GET"])
+@jwt_required()
+def list_llm_configs():
+    """获取所有 LLM 配置"""
+    configs = LLMConfig.query.order_by(LLMConfig.created_at.desc()).all()
+    return success([c.to_dict() for c in configs])
+
+
+@app.route("/api/llm-configs", methods=["POST"])
+@jwt_required()
+def create_llm_config():
+    """新建 LLM 配置"""
+    data = request.json
+    if not data or not data.get("name") or not data.get("provider") or not data.get("api_key") or not data.get("model_name"):
+        return fail("参数缺失")
+
+    config = LLMConfig(
+        name=data["name"],
+        provider=data["provider"],
+        api_key=data["api_key"],
+        base_url=data.get("base_url"),
+        model_name=data["model_name"],
+        embedding_model_name=data.get("embedding_model_name"),
+        is_default=data.get("is_default", False)
+    )
+
+    if config.is_default:
+        # 将其他配置设为非默认
+        LLMConfig.query.update({LLMConfig.is_default: False})
+
+    db.session.add(config)
+    db.session.commit()
+    return success(config.to_dict())
+
+
+@app.route("/api/llm-configs/<int:config_id>", methods=["PUT"])
+@jwt_required()
+def update_llm_config(config_id):
+    """更新 LLM 配置"""
+    config = LLMConfig.query.get(config_id)
+    if not config:
+        return fail("配置不存在", 404)
+
+    data = request.json
+    if "name" in data: config.name = data["name"]
+    if "provider" in data: config.provider = data["provider"]
+    if "api_key" in data and data["api_key"]: config.api_key = data["api_key"]
+    if "base_url" in data: config.base_url = data["base_url"]
+    if "model_name" in data: config.model_name = data["model_name"]
+    if "embedding_model_name" in data: config.embedding_model_name = data["embedding_model_name"]
+    if "is_default" in data:
+        config.is_default = data["is_default"]
+        if config.is_default:
+            LLMConfig.query.filter(LLMConfig.id != config_id).update({LLMConfig.is_default: False})
+
+    db.session.commit()
+    return success(config.to_dict())
+
+
+@app.route("/api/llm-configs/<int:config_id>", methods=["DELETE"])
+@jwt_required()
+def delete_llm_config(config_id):
+    """删除 LLM 配置"""
+    config = LLMConfig.query.get(config_id)
+    if not config:
+        return fail("配置不存在", 404)
+
+    db.session.delete(config)
+    db.session.commit()
+    return success(msg="配置已删除")
+
+
+@app.route("/api/llm-configs/<int:config_id>/set-default", methods=["POST"])
+@jwt_required()
+def set_default_llm_config(config_id):
+    """设置默认 LLM 配置"""
+    config = LLMConfig.query.get(config_id)
+    if not config:
+        return fail("配置不存在", 404)
+
+    LLMConfig.query.update({LLMConfig.is_default: False})
+    config.is_default = True
+    db.session.commit()
+    return success(msg="已设为默认配置")
 
 
 # ── 健康检查 ──────────────────────────────────────────────────────────────────

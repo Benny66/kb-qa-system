@@ -7,6 +7,7 @@ export const sendChat = (kbId, question, options = {}) =>
     question,
     session_id: options.sessionId || undefined,
     history: options.history || [],
+    config_id: options.config_id || undefined,
   })
 
 /** 获取问答历史 */
@@ -59,6 +60,7 @@ export function sendChatStream(kbId, question, options = {}, callbacks = {}) {
       question,
       session_id: options.sessionId || undefined,
       history: options.history || [],
+      config_id: options.config_id || undefined,
     }),
     signal: controller.signal,
   })

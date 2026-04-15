@@ -16,6 +16,15 @@
         >
           ＋ 新建会话
         </button>
+        <div class="model-select-wrapper">
+          <label class="toolbar-label">模型：</label>
+          <select v-model="selectedConfigId" class="input model-select">
+            <option :value="null">系统默认</option>
+            <option v-for="config in llmConfigs" :key="config.id" :value="config.id">
+              {{ config.name }} ({{ config.model_name }})
+            </option>
+          </select>
+        </div>
       </div>
       <div v-if="selectedKb" class="toolbar-right">
         <span class="tag tag-green">✅ 已选：{{ selectedKb.name }}</span>
@@ -190,6 +199,7 @@
 import { ref, computed, watch, nextTick, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { listKb } from '@/api/kb'
+import request from '@/api/request'
 import {
   sendChat,
   sendChatStream,
@@ -220,6 +230,9 @@ const chatBodyRef = ref(null)
 const referenceDialogVisible = ref(false)
 const activeReferences = ref([])
 const activeReferenceTitle = ref('')
+
+const llmConfigs = ref([])
+const selectedConfigId = ref(null)
 
 // 新增流式相关状态（任务 4.1）
 const isStreaming = ref(false)
@@ -283,6 +296,19 @@ async function fetchKbList() {
     toast.error('获取知识库列表失败')
   } finally {
     kbLoading.value = false
+  }
+}
+
+async function fetchLLMConfigs() {
+  try {
+    const res = await request.get('/llm-configs')
+    llmConfigs.value = res.data
+    const defaultCfg = llmConfigs.value.find(c => c.is_default)
+    if (defaultCfg) {
+      selectedConfigId.value = defaultCfg.id
+    }
+  } catch (err) {
+    console.error('获取大模型配置失败:', err)
   }
 }
 
@@ -413,6 +439,7 @@ async function handleSend() {
     {
       sessionId: activeSessionId.value,
       history,
+      config_id: selectedConfigId.value,
     },
     {
       onDelta: (content) => {
@@ -562,6 +589,7 @@ watch(selectedKbId, async (newKbId, oldKbId) => {
 
 onMounted(async () => {
   await fetchKbList()
+  await fetchLLMConfigs()
   await fetchSessions(true)
 })
 </script>
@@ -602,7 +630,20 @@ onMounted(async () => {
   color: var(--text-secondary);
   white-space: nowrap;
 }
-.kb-select { width: 280px; }
+.kb-select { width: 200px; }
+
+.model-select-wrapper {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: 16px;
+  padding-left: 16px;
+  border-left: 1px solid #e2e8f0;
+}
+
+.model-select {
+  width: 180px;
+}
 
 .chat-main {
   display: flex;

@@ -14,8 +14,10 @@ from typing import Any
 import chromadb
 from dotenv import load_dotenv
 from zhipuai import ZhipuAI
+from openai import OpenAI
 
 from document_loader import extract_document_text
+from ai_service import get_llm_config
 
 load_dotenv()
 
@@ -26,8 +28,6 @@ _CHROMA_PERSIST_DIR = os.path.join(
 )
 os.makedirs(_CHROMA_PERSIST_DIR, exist_ok=True)
 
-_client = ZhipuAI(api_key=os.getenv("ZHIPUAI_API_KEY", ""))
-_embedding_model = os.getenv("ZHIPUAI_EMBEDDING_MODEL", "embedding-3")
 _collection_name = os.getenv("CHROMA_COLLECTION_NAME", "kb_qa_chunks")
 
 CHUNK_SIZE = max(int(os.getenv("RAG_CHUNK_SIZE", "500")), 100)
@@ -40,6 +40,25 @@ _collection = _chroma_client.get_or_create_collection(
     name=_collection_name,
     metadata={"hnsw:space": "cosine"},
 )
+
+
+def get_embedding_client(config_id: int | None = None) -> tuple[Any, str]:
+    """根据当前配置获取向量模型客户端和模型名称。"""
+    config = get_llm_config(config_id)
+    if not config:
+        raise ValueError("未配置大模型，无法生成向量。请前往“模型配置”页面设置。")
+
+    provider = config.get("provider", "zhipuai").lower()
+    api_key = config.get("api_key")
+    # 优先使用专门配置的向量模型，若无则使用聊天模型名（某些兼容接口可能共用）
+    model = config.get("embedding_model_name") or config.get("model_name")
+    base_url = config.get("base_url")
+
+    if provider == "zhipuai":
+        return ZhipuAI(api_key=api_key), model
+    else:
+        # 豆包、通义、OpenAI 兼容等
+        return OpenAI(api_key=api_key, base_url=base_url), model
 
 
 def normalize_text(text: str) -> str:
@@ -104,16 +123,17 @@ def _extract_embeddings(response: Any) -> list[list[float]]:
     return [item.embedding for item in data if getattr(item, "embedding", None)]
 
 
-def embed_texts(texts: list[str]) -> list[list[float]]:
+def embed_texts(texts: list[str], config_id: int | None = None) -> list[list[float]]:
     """批量生成文本向量。"""
     if not texts:
         return []
 
+    client, model = get_embedding_client(config_id)
     vectors: list[list[float]] = []
     for i in range(0, len(texts), EMBEDDING_BATCH_SIZE):
         batch = texts[i:i + EMBEDDING_BATCH_SIZE]
-        response = _client.embeddings.create(
-            model=_embedding_model,
+        response = client.embeddings.create(
+            model=model,
             input=batch,
         )
         batch_vectors = _extract_embeddings(response)
@@ -123,10 +143,11 @@ def embed_texts(texts: list[str]) -> list[list[float]]:
     return vectors
 
 
-def embed_query(text: str) -> list[float]:
+def embed_query(text: str, config_id: int | None = None) -> list[float]:
     """生成查询向量。"""
-    response = _client.embeddings.create(
-        model=_embedding_model,
+    client, model = get_embedding_client(config_id)
+    response = client.embeddings.create(
+        model=model,
         input=text,
     )
     vectors = _extract_embeddings(response)
@@ -162,6 +183,7 @@ def index_knowledge_base(
     file_path: str,
     kb_name: str = "",
     original_filename: str | None = None,
+    config_id: int | None = None,
 ) -> dict:
     """为知识库创建向量索引。"""
     text = extract_document_text(file_path, original_filename or os.path.basename(file_path))
@@ -173,7 +195,7 @@ def index_knowledge_base(
 
     for start in range(0, len(chunks), EMBEDDING_BATCH_SIZE):
         batch_chunks = chunks[start:start + EMBEDDING_BATCH_SIZE]
-        batch_vectors = embed_texts(batch_chunks)
+        batch_vectors = embed_texts(batch_chunks, config_id=config_id)
         batch_ids = [f"kb_{kb_id}_chunk_{start + idx}" for idx in range(len(batch_chunks))]
         batch_metadatas = [
             {
@@ -203,6 +225,7 @@ def ensure_knowledge_base_index(
     file_path: str,
     kb_name: str = "",
     original_filename: str | None = None,
+    config_id: int | None = None,
 ) -> dict:
     """如果知识库还未建立索引，则自动建立。"""
     chunk_count = get_kb_index_count(kb_id, user_id)
@@ -213,7 +236,7 @@ def ensure_knowledge_base_index(
             "created": False,
         }
 
-    result = index_knowledge_base(kb_id, user_id, file_path, kb_name, original_filename)
+    result = index_knowledge_base(kb_id, user_id, file_path, kb_name, original_filename, config_id=config_id)
     return {
         "indexed": True,
         "chunk_count": result["chunk_count"],
@@ -221,7 +244,7 @@ def ensure_knowledge_base_index(
     }
 
 
-def retrieve_knowledge_context(kb_id: int, user_id: int, question: str, top_k: int = TOP_K) -> dict:
+def retrieve_knowledge_context(kb_id: int, user_id: int, question: str, top_k: int = TOP_K, config_id: int | None = None) -> dict:
     """检索与问题最相关的知识片段。"""
     if not question.strip():
         return {
@@ -229,7 +252,7 @@ def retrieve_knowledge_context(kb_id: int, user_id: int, question: str, top_k: i
             "context": "",
         }
 
-    query_vector = embed_query(question)
+    query_vector = embed_query(question, config_id)
     result = _collection.query(
         query_embeddings=[query_vector],
         n_results=top_k,

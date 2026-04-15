@@ -102,37 +102,72 @@ class ChatSession(db.Model):
 
 
 class ChatHistory(db.Model):
-    """问答历史表"""
+    """问答历史表（单轮对话记录）"""
     __tablename__ = "chat_histories"
 
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
     kb_id = db.Column(db.Integer, db.ForeignKey("knowledge_bases.id"), nullable=False)
-    session_id = db.Column(db.Integer, db.ForeignKey("chat_sessions.id"), nullable=True)
+    session_id = db.Column(db.Integer, db.ForeignKey("chat_sessions.id"), nullable=False)
     question = db.Column(db.Text, nullable=False)             # 用户提问
     answer = db.Column(db.Text, nullable=False)               # AI 回答
-    references_json = db.Column(db.Text, nullable=True)       # 检索参考片段（JSON）
-    tokens_used = db.Column(db.Integer, default=0)            # 消耗 token 数
+    references_json = db.Column(db.Text, nullable=True)       # 参考片段（JSON 字符串）
+    tokens_used = db.Column(db.Integer, default=0)            # 本次问答消耗 Token 数
     created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
 
     def to_dict(self):
-        references = []
-        if self.references_json:
-            try:
-                references = json.loads(self.references_json)
-            except Exception:
-                references = []
-
+        refs = []
+        try:
+            if self.references_json:
+                refs = json.loads(self.references_json)
+        except Exception:
+            pass
         return {
             "id": self.id,
             "user_id": self.user_id,
             "kb_id": self.kb_id,
             "kb_name": self.knowledge_base.name if self.knowledge_base else "",
             "session_id": self.session_id,
-            "session_title": self.session.title if self.session else "",
             "question": self.question,
             "answer": self.answer,
-            "references": references,
+            "references": refs,
             "tokens_used": self.tokens_used,
             "created_at": self.created_at.isoformat(),
+        }
+
+
+class LLMConfig(db.Model):
+    """大模型配置表"""
+    __tablename__ = "llm_configs"
+
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(128), nullable=False)          # 配置名称
+    provider = db.Column(db.String(64), nullable=False)        # provider 类型 (zhipuai, doubao, qianwen, etc.)
+    api_key = db.Column(db.String(256), nullable=False)       # API Key
+    base_url = db.Column(db.String(512), nullable=True)        # 接口 Base URL (可选)
+    model_name = db.Column(db.String(128), nullable=False)     # 聊天模型名称 (如 glm-4-flash)
+    embedding_model_name = db.Column(db.String(128), nullable=True) # 向量模型名称 (如 embedding-3)
+    is_default = db.Column(db.Boolean, default=False)          # 是否为默认配置
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = db.Column(db.DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))
+
+    def to_dict(self, mask_key=True):
+        api_key = self.api_key
+        if mask_key and api_key:
+            if len(api_key) > 8:
+                api_key = api_key[:4] + "••••" + api_key[-4:]
+            else:
+                api_key = "••••"
+        
+        return {
+            "id": self.id,
+            "name": self.name,
+            "provider": self.provider,
+            "api_key": api_key,
+            "base_url": self.base_url,
+            "model_name": self.model_name,
+            "embedding_model_name": self.embedding_model_name,
+            "is_default": self.is_default,
+            "created_at": self.created_at.isoformat(),
+            "updated_at": self.updated_at.isoformat(),
         }

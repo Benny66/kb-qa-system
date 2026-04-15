@@ -31,6 +31,12 @@ const routes = [
         component: () => import('@/views/HistoryView.vue'),
         meta: { title: '问答历史' },
       },
+      {
+        path: 'settings',
+        name: 'Settings',
+        component: () => import('@/views/SettingsView.vue'),
+        meta: { title: '模型配置' },
+      },
     ],
   },
   { path: '/:pathMatch(.*)*', redirect: '/' },

@@ -53,6 +53,7 @@ const navItems = [
   { to: '/kb',      icon: '🗂️',  label: '知识库管理' },
   { to: '/chat',    icon: '💬',  label: 'AI 问答' },
   { to: '/history', icon: '📋',  label: '问答历史' },
+  { to: '/settings', icon: '⚙️',  label: '模型配置' },
 ]
 
 const userInitial = computed(() =>
