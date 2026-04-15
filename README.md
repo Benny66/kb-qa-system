@@ -52,6 +52,14 @@
 - 支持从历史页一键“继续聊天”
 - 支持删除整段会话
 
+### 6. 多模型配置与动态切换 (新)
+- **可视化配置管理**：提供专门的“模型配置”页面，无需修改代码或 `.env` 文件即可管理 AI 模型。
+- **支持多种国内大模型**：内置支持 **智谱 AI**、**字节豆包**、**阿里通义**、**MiniMax** 等，并支持任何 **OpenAI 兼容接口**。
+- **动态模型切换**：在对话过程中，用户可以随时在顶栏切换不同的 AI 模型配置，实时生效。
+- **双模型独立配置**：支持为每个配置分别指定“聊天模型”和“向量（Embedding）模型”。
+- **数据库持久化**：所有 AI 配置均存储在数据库中，支持多套配置并存及一键设为默认。
+- **自动迁移**：系统首次启动时会自动将旧版的 `.env` 智谱配置迁移至数据库，实现平滑升级。
+
 ---
 ## 🖼️ 页面截图
 
@@ -74,7 +82,7 @@
 | 后端 | Python、Flask、Flask-CORS、Flask-SQLAlchemy |
 | 数据库 | SQLite |
 | 向量数据库 | ChromaDB |
-| AI | 智谱 AI（默认 `glm-4-flash`，Embedding 默认 `embedding-3`） |
+| AI | 智谱 AI、字节豆包、通义千问、MiniMax 等 |
 
 ---
 
@@ -206,6 +214,7 @@ cd kb-qa-system
 - `pypdf>=5.0.0`
 - `python-docx>=1.1.2`
 - `python-dotenv==1.0.1`
+- `openai>=1.0.0`
 - `sniffio>=1.3.0`
 
 你需要在 `kb-qa-backend` 下自行创建 `.env` 文件，常用配置如下：
@@ -213,8 +222,10 @@ cd kb-qa-system
 ```env
 JWT_SECRET_KEY=your-secret-key
 ZHIPUAI_API_KEY=your-api-key-here
+# 注意：以下配置仅在首次启动时用于自动迁移，之后请在“模型配置”页面进行管理
 ZHIPUAI_MODEL=glm-4-flash
 ZHIPUAI_EMBEDDING_MODEL=embedding-3
+```
 UPLOAD_FOLDER=uploads
 CHROMA_PERSIST_DIR=chroma_db
 CHROMA_COLLECTION_NAME=kb_qa_chunks
