@@ -225,7 +225,6 @@ ZHIPUAI_API_KEY=your-api-key-here
 # 注意：以下配置仅在首次启动时用于自动迁移，之后请在“模型配置”页面进行管理
 ZHIPUAI_MODEL=glm-4-flash
 ZHIPUAI_EMBEDDING_MODEL=embedding-3
-```
 UPLOAD_FOLDER=uploads
 CHROMA_PERSIST_DIR=chroma_db
 CHROMA_COLLECTION_NAME=kb_qa_chunks
