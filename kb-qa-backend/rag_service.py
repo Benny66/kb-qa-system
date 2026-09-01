@@ -9,6 +9,7 @@ RAG 服务：
 
 import os
 import re
+from difflib import SequenceMatcher
 from typing import Any
 
 import chromadb
@@ -34,6 +35,21 @@ CHUNK_SIZE = max(int(os.getenv("RAG_CHUNK_SIZE", "500")), 100)
 CHUNK_OVERLAP = max(int(os.getenv("RAG_CHUNK_OVERLAP", "80")), 0)
 TOP_K = max(int(os.getenv("RAG_TOP_K", "4")), 1)
 EMBEDDING_BATCH_SIZE = max(int(os.getenv("RAG_EMBED_BATCH_SIZE", "32")), 1)
+
+# 距离阈值（cosine distance，越小越相关）。默认 None 表示不过滤。
+# 开启后仅保留 distance < 阈值的片段；全部超阈值时返回空 context，
+# 触发 ai-service 的「未找到相关信息」分支，避免诱导模型编造答案。
+_RAG_DISTANCE_THRESHOLD = os.getenv("RAG_DISTANCE_THRESHOLD")
+RAG_DISTANCE_THRESHOLD: float | None = None
+if _RAG_DISTANCE_THRESHOLD not in (None, ""):
+    try:
+        RAG_DISTANCE_THRESHOLD = float(_RAG_DISTANCE_THRESHOLD)
+    except ValueError:
+        RAG_DISTANCE_THRESHOLD = None
+
+# 去重相似度阈值：两片段内容相似度（difflib.SequenceMatcher.ratio）达到该值视为重复。
+# ratio 取值 0~1，越大越相似。默认 0.6，仅去除高度重叠的片段。
+DEDUP_OVERLAP_RATIO = 0.6
 
 _chroma_client = chromadb.PersistentClient(path=_CHROMA_PERSIST_DIR)
 _collection = _chroma_client.get_or_create_collection(
@@ -244,8 +260,42 @@ def ensure_knowledge_base_index(
     }
 
 
+def _normalize_for_dedup(text: str) -> str:
+    """归一化文本用于重叠去重：去除所有空白，仅保留可比较的字符序列。"""
+    return re.sub(r"\s+", "", text or "")
+
+
+def _deduplicate_chunks(chunks: list[dict], ratio: float = DEDUP_OVERLAP_RATIO) -> list[dict]:
+    """按内容重叠去重，保留排序靠前的片段（chunks 已按相关度降序）。
+
+    相似度用 difflib.SequenceMatcher.ratio，达到 DEDUP_OVERLAP_RATIO 视为重复。
+    对切分 overlap 产生的高度重叠片段有效；不引入 embedding 二次计算。
+    """
+    if not chunks:
+        return chunks
+
+    kept: list[dict] = []
+    for chunk in chunks:
+        norm = _normalize_for_dedup(chunk.get("content"))
+        duplicate = False
+        for existing in kept:
+            existing_norm = _normalize_for_dedup(existing.get("content"))
+            if not norm or not existing_norm:
+                continue
+            if SequenceMatcher(None, norm, existing_norm).ratio() >= ratio:
+                duplicate = True
+                break
+        if not duplicate:
+            kept.append(chunk)
+    return kept
+
+
 def retrieve_knowledge_context(kb_id: int, user_id: int, question: str, top_k: int = TOP_K, config_id: int | None = None) -> dict:
-    """检索与问题最相关的知识片段。"""
+    """检索与问题最相关的知识片段。
+
+    流程：向量召回（多取候选）→ 距离阈值过滤 → 内容重叠去重 → 截断 top_k。
+    新特性默认关闭（RAG_DISTANCE_THRESHOLD 为空时不过滤），向后兼容。
+    """
     if not question.strip():
         return {
             "chunks": [],
@@ -253,9 +303,11 @@ def retrieve_knowledge_context(kb_id: int, user_id: int, question: str, top_k: i
         }
 
     query_vector = embed_query(question, config_id)
+    # 多取候选（top_k * 2），供阈值过滤 + 去重后仍能补足 top_k
+    fetch_k = max(top_k * 2, top_k)
     result = _collection.query(
         query_embeddings=[query_vector],
-        n_results=top_k,
+        n_results=fetch_k,
         where=_build_where(kb_id, user_id),
         include=["documents", "metadatas", "distances"],
     )
@@ -278,6 +330,19 @@ def retrieve_knowledge_context(kb_id: int, user_id: int, question: str, top_k: i
             }
         )
 
+    # 距离阈值过滤（默认关闭）。cosine distance 越小越相关，故保留 distance < 阈值。
+    filtered_count = 0
+    if RAG_DISTANCE_THRESHOLD is not None:
+        before = len(chunks)
+        chunks = [c for c in chunks if c.get("distance") is not None and c["distance"] < RAG_DISTANCE_THRESHOLD]
+        filtered_count = before - len(chunks)
+
+    # 内容重叠去重
+    chunks = _deduplicate_chunks(chunks)
+
+    # 截断到 top_k
+    chunks = chunks[:top_k]
+
     context = "\n\n".join(
         f"[片段{index + 1}]\n{item['content']}"
         for index, item in enumerate(chunks)
@@ -286,4 +351,5 @@ def retrieve_knowledge_context(kb_id: int, user_id: int, question: str, top_k: i
     return {
         "chunks": chunks,
         "context": context,
+        "filtered_count": filtered_count,
     }

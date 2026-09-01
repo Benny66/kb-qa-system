@@ -4,7 +4,7 @@
       <div class="login-header">
         <div class="login-logo">📚</div>
         <h1>知识库问答系统</h1>
-        <p>请使用预置账号登录</p>
+        <p>请使用管理员账号登录</p>
       </div>
 
       <form class="login-form" @submit.prevent="handleLogin">
@@ -39,14 +39,6 @@
           {{ loading ? '登录中...' : '登 录' }}
         </button>
       </form>
-
-      <div class="login-hint">
-        <p>预置账号：</p>
-        <div class="hint-accounts">
-          <span class="tag tag-blue" @click="fillAccount('admin', 'admin123')">admin / admin123</span>
-          <span class="tag tag-blue" @click="fillAccount('demo', 'demo123')">demo / demo123</span>
-        </div>
-      </div>
     </div>
   </div>
 </template>
@@ -64,11 +56,6 @@ const toast = useToastStore()
 const form = reactive({ username: '', password: '' })
 const loading = ref(false)
 const errorMsg = ref('')
-
-function fillAccount(username, password) {
-  form.username = username
-  form.password = password
-}
 
 async function handleLogin() {
   errorMsg.value = ''
@@ -134,15 +121,4 @@ async function handleLogin() {
   font-size: 15px;
   margin-top: 4px;
 }
-
-.login-hint {
-  margin-top: 24px;
-  padding-top: 20px;
-  border-top: 1px solid var(--border);
-  text-align: center;
-}
-.login-hint p { font-size: 12px; color: var(--text-muted); margin-bottom: 10px; }
-.hint-accounts { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
-.hint-accounts .tag { cursor: pointer; transition: opacity .18s; }
-.hint-accounts .tag:hover { opacity: .75; }
 </style>

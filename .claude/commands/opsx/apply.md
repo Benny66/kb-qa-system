@@ -1,7 +1,8 @@
 ---
-name: opsx-apply
+name: "OPSX: Apply"
 description: Implement tasks from an OpenSpec change (Experimental)
-invokable: true
+category: Workflow
+tags: [workflow, artifacts, experimental]
 ---
 
 Implement tasks from an OpenSpec change.

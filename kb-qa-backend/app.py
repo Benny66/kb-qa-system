@@ -186,25 +186,44 @@ def build_session_history_messages(session_id: int, limit: int = 5) -> list[dict
     return messages
 
 
+# ── 预置账号配置（从 .env 读取，账号密码的唯一来源）──────────────────────────
+PRESET_ADMIN_USERNAME = os.getenv("PRESET_ADMIN_USERNAME", "admin").strip()
+PRESET_ADMIN_PASSWORD = (os.getenv("PRESET_ADMIN_PASSWORD") or "").strip()
+
+
 # ── 数据库初始化 & 预置账号 ───────────────────────────────────────────────────
 def init_db():
-    """创建表并预置默认账号及初始 LLM 配置"""
+    """创建表并预置管理员账号及初始 LLM 配置。
+
+    管理员账号从 .env 的 PRESET_ADMIN_USERNAME / PRESET_ADMIN_PASSWORD 读取，
+    按 upsert 语义维护：已存在则用配置密码覆盖（改配置即生效），密码未配置时拒绝创建。
+    """
     db.create_all()
     ensure_chat_schema()
 
-    # 1. 预置账号列表（用户名: 密码）
-    preset_users = {
-        "admin": "admin123",
-        "demo": "demo123",
-    }
+    # 1. 预置管理员账号（upsert：已存在则覆盖密码）
+    if not PRESET_ADMIN_USERNAME:
+        raise RuntimeError("PRESET_ADMIN_USERNAME 不能为空")
 
-    for username, password in preset_users.items():
-        if not User.query.filter_by(username=username).first():
-            user = User(
-                username=username,
-                password_hash=generate_password_hash(password),
+    existing_admin = User.query.filter_by(username=PRESET_ADMIN_USERNAME).first()
+    if existing_admin is not None:
+        if PRESET_ADMIN_PASSWORD:
+            existing_admin.password_hash = generate_password_hash(PRESET_ADMIN_PASSWORD)
+            print(f"✅ 已按 .env 配置更新预置账号 {PRESET_ADMIN_USERNAME} 的密码")
+        else:
+            print(f"⚠️ 未配置 PRESET_ADMIN_PASSWORD，沿用账号 {PRESET_ADMIN_USERNAME} 已有密码")
+    else:
+        if not PRESET_ADMIN_PASSWORD:
+            raise RuntimeError(
+                "未配置 PRESET_ADMIN_PASSWORD，无法创建预置账号。"
+                "请在 .env 中设置 PRESET_ADMIN_PASSWORD 后重启"
             )
-            db.session.add(user)
+        user = User(
+            username=PRESET_ADMIN_USERNAME,
+            password_hash=generate_password_hash(PRESET_ADMIN_PASSWORD),
+        )
+        db.session.add(user)
+        print(f"✅ 已从 .env 创建预置账号 {PRESET_ADMIN_USERNAME}")
 
     # 2. 预置初始 LLM 配置（从 .env 迁移）
     if not LLMConfig.query.first():
@@ -222,7 +241,7 @@ def init_db():
             print("✅ 已从 .env 迁移智谱 AI 配置到数据库")
 
     db.session.commit()
-    print("✅ 数据库初始化完成，预置账号：admin/admin123, demo/demo123")
+    print("✅ 数据库初始化完成")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -233,7 +252,7 @@ def init_db():
 def login():
     """
     用户登录
-    Body: { "username": "admin", "password": "admin123" }
+    Body: { "username": "<管理员用户名>", "password": "<密码>" }
     """
     data = request.get_json()
     if not data:
